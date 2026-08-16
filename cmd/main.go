@@ -2,9 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"kirfeed/internal/config"
 	apphttp "kirfeed/internal/http"
-	"kirfeed/internal/infra/cache"
+	rediscache "kirfeed/internal/infra/cache"
 	"kirfeed/internal/infra/db"
 	"kirfeed/internal/infra/mq"
 	"log"
@@ -33,31 +34,30 @@ func run() error {
 	}
 
 	// 连接数据库
-	log.Printf("Database config: %v", cfg.Database)
 	sqlDB, err := db.NewDB(cfg.Database)
 	if err != nil {
-		log.Fatalf("Failed to connect database: %v", err)
+		return fmt.Errorf("connect database: %w", err)
 	}
 	if err := db.AutoMigrate(sqlDB); err != nil {
-		log.Fatalf("Failed to auto migrate database: %v", err)
+		return fmt.Errorf("auto migrate database: %w", err)
 	}
 	defer db.CloseDB(sqlDB)
 
 	// 连接 Redis (可选，用于缓存)
-	cache, err := cache.NewFromEnv(&cfg.Redis)
+	cache, err := rediscache.NewFromEnv(&cfg.Redis)
 	if err != nil {
-		log.Printf("Redis config error (cache disabled): %v", err)
+		log.Printf("Redis config error (rediscache disabled): %v", err)
 		cache = nil
 	} else {
 		pingCtx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		defer cancel()
 		if err := cache.Ping(pingCtx); err != nil {
-			log.Printf("Redis not available (cache disabled): %v", err)
+			log.Printf("Redis not available (rediscache disabled): %v", err)
 			_ = cache.Close()
 			cache = nil
 		} else {
 			defer cache.Close()
-			log.Printf("Redis connected (cache enabled)")
+			log.Printf("Redis connected (rediscache enabled)")
 		}
 	}
 
@@ -75,7 +75,7 @@ func run() error {
 	r := apphttp.SetRouter(sqlDB, cache, rmq)
 	log.Printf("Server is running on port %d", cfg.Server.Port)
 	if err := r.Run(":" + strconv.Itoa(cfg.Server.Port)); err != nil {
-		log.Fatalf("Failed to run server: %v", err)
+		return fmt.Errorf("run server: %w", err)
 	}
 
 	return nil
