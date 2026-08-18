@@ -39,6 +39,7 @@ func JWTAuth(accountRepo *account.AccountRepository, cache *rediscache.Client) g
 		check(c, claims, tokenString, accountRepo, cache)
 	}
 }
+
 func check(c *gin.Context, claims *auth.Claims, tokenString string, accountRepo *account.AccountRepository, cache *rediscache.Client) {
 	// 先查 Redis
 	if cache != nil {

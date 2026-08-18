@@ -13,6 +13,10 @@ import (
 
 func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Engine {
 	r := gin.Default() // Logger、Recovery
+	if err := r.SetTrustedProxies(nil); err != nil {
+		panic(err)
+	}
+	r.Static("/static", "./.run/uploads")
 
 	// ping -----> pong!
 	r.GET("/ping", func(c *gin.Context) {
@@ -30,7 +34,13 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 		accountGroup.POST("/register", accountHandler.Register)
 		accountGroup.POST("/login", accountHandler.Login)
 		accountGroup.POST("/refresh", accountHandler.Refresh)
+		accountGroup.POST("/findByID", accountHandler.FindByID)
+		accountGroup.POST("/findByUsername", accountHandler.FindByUsername)
 		accountGroup.POST("/logout", jwtmiddleware.JWTAuth(accountRepository, cache), accountHandler.Logout)
+		accountGroup.POST("/rename", jwtmiddleware.JWTAuth(accountRepository, cache), accountHandler.Rename)
+		accountGroup.POST("/uploadAvatar", jwtmiddleware.JWTAuth(accountRepository, cache), accountHandler.UploadAvatar)
+		accountGroup.POST("/updateProfile", jwtmiddleware.JWTAuth(accountRepository, cache), accountHandler.UpdateProfile)
+		accountGroup.POST("/changePassword", accountHandler.ChangePassword)
 	}
 
 	return r

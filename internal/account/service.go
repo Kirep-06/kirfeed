@@ -7,15 +7,20 @@ import (
 	rediscache "kirfeed/internal/infra/cache"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/go-sql-driver/mysql"
 	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 )
 
 type AccountService struct {
 	accountRepository *AccountRepository
 	cache             *rediscache.Client
 }
+
+var ErrNothingToUpdate = errors.New("nothing to update")
 
 func NewAccountService(accountRepository *AccountRepository, cache *rediscache.Client) *AccountService {
 	return &AccountService{
@@ -168,4 +173,74 @@ func (as *AccountService) RefreshAccessToken(ctx context.Context, refreshToken s
 		}
 	}
 	return "", 0, "", errors.New("invalid refresh token")
+}
+
+func (as *AccountService) UpdateAvatar(ctx context.Context, accountID uint, avatarURL string) error {
+	return as.accountRepository.UpdateAvatar(ctx, accountID, avatarURL)
+}
+
+func (as *AccountService) UpdateProfile(ctx context.Context, accountID uint, req *UpdateProfileRequest) error {
+	updates := make(map[string]interface{})
+	if req.Bio != nil {
+		updates["bio"] = strings.TrimSpace(*req.Bio)
+	}
+	if req.AvatarURL != nil {
+		updates["avatar_url"] = strings.TrimSpace(*req.AvatarURL)
+	}
+	if len(updates) == 0 {
+		return ErrNothingToUpdate
+	}
+	return as.accountRepository.UpdateFields(ctx, accountID, updates)
+}
+
+func (as *AccountService) Rename(ctx context.Context, accountID uint, newUsername string) (string, error) {
+	if newUsername == "" {
+		return "", ErrNewUsernameRequired
+	}
+
+	token, err := auth.GenerateToken(accountID, newUsername)
+	if err != nil {
+		return "", err
+	}
+
+	if err := as.accountRepository.RenameWithToken(ctx, accountID, newUsername, token); err != nil {
+		var mysqlErr *mysql.MySQLError
+		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+			return "", ErrUsernameTaken
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", err
+		}
+		return "", err
+	}
+	if as.cache != nil {
+		cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+		defer cancel()
+
+		if err := as.cache.SetBytes(cacheCtx, as.cache.Key("account:%d", accountID), []byte(token), 24*time.Hour); err != nil {
+			log.Printf("failed to set cache: %v", err)
+		}
+	}
+	return token, nil
+}
+
+func (as *AccountService) ChangePassword(ctx context.Context, username, oldPassword, newPassword string) error {
+	account, err := as.FindByUsername(ctx, username)
+	if err != nil {
+		return err
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(account.Password), []byte(oldPassword)); err != nil {
+		return err
+	}
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+	if err != nil {
+		return err
+	}
+	if err := as.accountRepository.ChangePassword(ctx, account.ID, string(passwordHash)); err != nil {
+		return err
+	}
+	if err := as.Logout(ctx, account.ID); err != nil {
+		return err
+	}
+	return nil
 }
