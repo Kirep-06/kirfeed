@@ -5,6 +5,7 @@ import (
 	rediscache "kirfeed/internal/infra/cache"
 	jwtmiddleware "kirfeed/internal/infra/jwt"
 	"kirfeed/internal/infra/mq"
+	"kirfeed/internal/video"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -41,6 +42,19 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 		accountGroup.POST("/uploadAvatar", jwtmiddleware.JWTAuth(accountRepository, cache), accountHandler.UploadAvatar)
 		accountGroup.POST("/updateProfile", jwtmiddleware.JWTAuth(accountRepository, cache), accountHandler.UpdateProfile)
 		accountGroup.POST("/changePassword", accountHandler.ChangePassword)
+	}
+
+	videoRepository := video.NewVideoRepository(db)
+	videoService := video.NewVideoService(videoRepository, cache)
+	videoHandler := video.NewVideoHandler(videoService, accountService)
+	videoGroup := r.Group("/video")
+	{
+		videoGroup.POST("/detail", videoHandler.GetDetail)
+		authorized := videoGroup.Group("", jwtmiddleware.JWTAuth(accountRepository, cache))
+		authorized.POST("/publish", videoHandler.PublishVideo)
+		authorized.POST("/uploadVideo", videoHandler.UploadVideo)
+		authorized.POST("/uploadCover", videoHandler.UploadCover)
+		authorized.POST("/delete", videoHandler.DeleteVideo)
 	}
 
 	return r

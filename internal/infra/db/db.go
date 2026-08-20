@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"kirfeed/internal/account"
 	"kirfeed/internal/config"
+	"kirfeed/internal/video"
 
 	"gorm.io/driver/mysql"
 	"gorm.io/gorm"
@@ -22,7 +23,11 @@ func NewDB(dbcfg config.DatabaseConfig) (*gorm.DB, error) {
 }
 
 func AutoMigrate(db *gorm.DB) error {
-	return db.AutoMigrate(&account.Account{})
+	return db.AutoMigrate(
+		&account.Account{},
+		&video.OutboxMsg{},
+		&video.Video{},
+	)
 }
 
 func CloseDB(db *gorm.DB) error {
