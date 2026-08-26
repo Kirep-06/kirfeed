@@ -80,6 +80,13 @@ func (c *Client) Del(ctx context.Context, key string) error {
 	return c.rdb.Del(ctx, key).Err()
 }
 
+func (c *Client) MGet(cacheCtx context.Context, cacheKeys ...string) ([]interface{}, error) {
+	if c == nil || c.rdb == nil {
+		return nil, errors.New("redis client not initialized")
+	}
+	return c.rdb.MGet(cacheCtx, cacheKeys...).Result()
+}
+
 func IsMiss(err error) bool {
 	return err == redis.Nil
 }

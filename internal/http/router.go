@@ -2,6 +2,7 @@ package apphttp
 
 import (
 	"kirfeed/internal/account"
+	"kirfeed/internal/feed"
 	rediscache "kirfeed/internal/infra/cache"
 	jwtmiddleware "kirfeed/internal/infra/jwt"
 	"kirfeed/internal/infra/mq"
@@ -44,6 +45,7 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 		accountGroup.POST("/changePassword", accountHandler.ChangePassword)
 	}
 
+	// video
 	videoRepository := video.NewVideoRepository(db)
 	videoService := video.NewVideoService(videoRepository, cache)
 	videoHandler := video.NewVideoHandler(videoService, accountService)
@@ -56,6 +58,12 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 		authorized.POST("/uploadCover", videoHandler.UploadCover)
 		authorized.POST("/delete", videoHandler.DeleteVideo)
 	}
+
+	// feed
+	feedRepository := feed.NewFeedRepository(db)
+	feedService := feed.NewFeedService(feedRepository, cache)
+	feedHandler := feed.NewFeedHandler(feedService)
+	r.POST("/feed/latest", feedHandler.ListLatest)
 
 	return r
 }
