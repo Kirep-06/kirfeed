@@ -49,6 +49,9 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 	videoRepository := video.NewVideoRepository(db)
 	videoService := video.NewVideoService(videoRepository, cache)
 	videoHandler := video.NewVideoHandler(videoService, accountService)
+	likeRepository := video.NewLikeRepository(db)
+	likeService := video.NewLikeService(likeRepository, videoRepository, cache, nil, nil)
+	likeHandler := video.NewLikeHandler(likeService)
 	videoGroup := r.Group("/video")
 	{
 		videoGroup.POST("/detail", videoHandler.GetDetail)
@@ -57,6 +60,10 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 		authorized.POST("/uploadVideo", videoHandler.UploadVideo)
 		authorized.POST("/uploadCover", videoHandler.UploadCover)
 		authorized.POST("/delete", videoHandler.DeleteVideo)
+		authorized.POST("/like", likeHandler.Like)
+		authorized.POST("/unlike", likeHandler.Unlike)
+		authorized.POST("/isLiked", likeHandler.IsLiked)
+		authorized.POST("/myLikedVideos", likeHandler.ListMyLikedVideos)
 	}
 
 	// feed

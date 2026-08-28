@@ -59,3 +59,21 @@ func (vr *VideoRepository) IsExist(ctx context.Context, id uint) (bool, error) {
 	}
 	return true, nil
 }
+
+func (vr *VideoRepository) ChangeLikesCount(ctx context.Context, id uint, change int64) error {
+	if err := vr.db.WithContext(ctx).Model(&Video{}).
+		Where("id = ?", id).
+		UpdateColumn("likes_count", gorm.Expr("GREATEST(likes_count + ?, 0)", change)).Error; err != nil {
+		return err
+	}
+	return nil
+}
+
+func (vr *VideoRepository) ChangePopularity(ctx context.Context, id uint, change int64) error {
+	if err := vr.db.WithContext(ctx).Model(&Video{}).
+		Where("id = ?", id).
+		UpdateColumn("popularity", gorm.Expr("GREATEST(popularity + ?, 0)", change)).Error; err != nil {
+		return err
+	}
+	return nil
+}
