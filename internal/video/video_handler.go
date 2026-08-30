@@ -32,18 +32,18 @@ func NewVideoHandler(service *VideoService, accountService *account.AccountServi
 func (vh *VideoHandler) PublishVideo(c *gin.Context) {
 	var req PublishVideoRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrValidation), gin.H{"error": err.Error()})
 		return
 	}
 
 	authorId, err := jwt.GetAccountID(c)
 	if err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrUnauthorized), gin.H{"error": err.Error()})
 		return
 	}
 	username, err := jwt.GetUsername(c)
 	if err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrUnauthorized), gin.H{"error": err.Error()})
 		return
 	}
 	video := &Video{
@@ -59,13 +59,13 @@ func (vh *VideoHandler) PublishVideo(c *gin.Context) {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, video)
+	c.JSON(http.StatusOK, video)
 }
 
 func (vh *VideoHandler) UploadVideo(c *gin.Context) {
 	authorId, err := jwt.GetAccountID(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrUnauthorized), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -120,7 +120,7 @@ func (vh *VideoHandler) UploadVideo(c *gin.Context) {
 func (vh *VideoHandler) UploadCover(c *gin.Context) {
 	authorId, err := jwt.GetAccountID(c)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrUnauthorized), gin.H{"error": err.Error()})
 		return
 	}
 
@@ -196,25 +196,25 @@ func buildAbsoluteURL(c *gin.Context, p string) string {
 func (vh *VideoHandler) DeleteVideo(c *gin.Context) {
 	var req DeleteVideoRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrValidation), gin.H{"error": err.Error()})
 		return
 	}
 	authorId, err := jwt.GetAccountID(c)
 	if err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrUnauthorized), gin.H{"error": err.Error()})
 		return
 	}
 	if err := vh.service.Delete(c.Request.Context(), req.ID, authorId); err != nil {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"message": "video deleted"})
+	c.JSON(http.StatusOK, gin.H{"message": "video deleted"})
 }
 
 func (vh *VideoHandler) GetDetail(c *gin.Context) {
 	var req GetDetailRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrValidation), gin.H{"error": err.Error()})
 		return
 	}
 	video, err := vh.service.GetDetail(c.Request.Context(), req.ID)
@@ -222,5 +222,5 @@ func (vh *VideoHandler) GetDetail(c *gin.Context) {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, video)
+	c.JSON(http.StatusOK, video)
 }

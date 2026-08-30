@@ -3,6 +3,7 @@ package feed
 import (
 	"kirfeed/internal/apierror"
 	"kirfeed/internal/infra/jwt"
+	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -19,7 +20,7 @@ func NewFeedHandler(service *FeedService) *FeedHandler {
 func (f *FeedHandler) ListLatest(c *gin.Context) {
 	var req ListLatestRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrValidation), gin.H{"error": err.Error()})
 		return
 	}
 	if req.Limit <= 0 || req.Limit > 50 {
@@ -35,11 +36,11 @@ func (f *FeedHandler) ListLatest(c *gin.Context) {
 	}
 	feedItems, err := f.service.ListLatest(c.Request.Context(), req.Limit, latestTime, viewerAccountID)
 	if err != nil {
-		c.JSON(500, gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
 	feedItems.VideoList = nonNilFeedVideoItems(feedItems.VideoList)
-	c.JSON(200, feedItems)
+	c.JSON(http.StatusOK, feedItems)
 }
 
 func nonNilFeedVideoItems(items []FeedVideoItem) []FeedVideoItem {

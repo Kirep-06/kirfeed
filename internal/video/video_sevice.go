@@ -3,7 +3,6 @@ package video
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"kirfeed/internal/apierror"
 	rediscache "kirfeed/internal/infra/cache"
 
@@ -26,20 +25,20 @@ func NewVideoService(repo *VideoRepository, cache *rediscache.Client) *VideoServ
 
 func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
 	if video == nil {
-		return errors.New("video is nil")
+		return apierror.New(apierror.ErrValidation, "video is nil")
 	}
 	video.Title = strings.TrimSpace(video.Title)
 	video.PlayURL = strings.TrimSpace(video.PlayURL)
 	video.CoverURL = strings.TrimSpace(video.CoverURL)
 
 	if video.Title == "" {
-		return errors.New("title is required")
+		return apierror.New(apierror.ErrValidation, "title is required")
 	}
 	if video.PlayURL == "" {
-		return errors.New("play url is required")
+		return apierror.New(apierror.ErrValidation, "play url is required")
 	}
 	if video.CoverURL == "" {
-		return errors.New("cover url is required")
+		return apierror.New(apierror.ErrValidation, "cover url is required")
 	}
 
 	err := vs.repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -69,7 +68,7 @@ func (vs *VideoService) Delete(ctx context.Context, id uint, authorID uint) erro
 		return err
 	}
 	if video == nil {
-		return errors.New("video not found")
+		return apierror.New(apierror.ErrNotFound, "video not found")
 	}
 	if video.AuthorID != authorID {
 		return apierror.ErrUnauthorized

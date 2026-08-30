@@ -3,6 +3,7 @@ package video
 import (
 	"context"
 	"errors"
+	"kirfeed/internal/apierror"
 	rediscache "kirfeed/internal/infra/cache"
 	"kirfeed/internal/infra/mq"
 
@@ -19,6 +20,12 @@ type LikeService struct {
 	likeMQ       *mq.LikeMQ
 	popularityMQ *mq.PopularityMQ
 }
+
+var (
+	ErrLikeVideoNotFound = apierror.New(apierror.ErrNotFound, "video not found")
+	ErrAlreadyLiked      = apierror.New(apierror.ErrConflict, "user has liked this video")
+	ErrNotLiked          = apierror.New(apierror.ErrConflict, "user has not liked this video")
+)
 
 func NewLikeService(repo *LikeRepository, videoRepo *VideoRepository, cache *rediscache.Client, likeMQ *mq.LikeMQ, popularityMQ *mq.PopularityMQ) *LikeService {
 	return &LikeService{
@@ -48,7 +55,7 @@ func (s *LikeService) Like(ctx context.Context, like *Like) error {
 			return err
 		}
 		if !ok {
-			return errors.New("video not found")
+			return ErrLikeVideoNotFound
 		}
 	}
 
@@ -57,7 +64,7 @@ func (s *LikeService) Like(ctx context.Context, like *Like) error {
 		return err
 	}
 	if isLiked {
-		return errors.New("user has liked this video")
+		return ErrAlreadyLiked
 	}
 
 	like.CreatedAt = time.Now()
@@ -82,13 +89,13 @@ func (s *LikeService) Like(ctx context.Context, like *Like) error {
 		err := s.repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if err := tx.Select("id").First(&Video{}, like.VideoID).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return errors.New("video not found")
+					return ErrLikeVideoNotFound
 				}
 				return err
 			}
 			if err := tx.Create(like).Error; err != nil {
 				if isDupKey(err) {
-					return errors.New("user has liked this video")
+					return ErrAlreadyLiked
 				}
 				return err
 			}
@@ -125,7 +132,7 @@ func (s *LikeService) Unlike(ctx context.Context, like *Like) error {
 			return err
 		}
 		if !ok {
-			return errors.New("video not found")
+			return ErrLikeVideoNotFound
 		}
 	}
 
@@ -134,7 +141,7 @@ func (s *LikeService) Unlike(ctx context.Context, like *Like) error {
 		return err
 	}
 	if !isLiked {
-		return errors.New("user has not liked this video")
+		return ErrNotLiked
 	}
 
 	mysqlEnqueued := false
@@ -161,7 +168,7 @@ func (s *LikeService) Unlike(ctx context.Context, like *Like) error {
 				return del.Error
 			}
 			if del.RowsAffected == 0 {
-				return errors.New("user has not liked this video")
+				return ErrNotLiked
 			}
 
 			if err := tx.Model(&Video{}).Where("id = ?", like.VideoID).
