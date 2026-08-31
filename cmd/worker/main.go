@@ -6,6 +6,7 @@ import (
 	rediscache "kirfeed/internal/infra/cache"
 	"kirfeed/internal/infra/db"
 	"kirfeed/internal/infra/mq"
+	"kirfeed/internal/video"
 	"kirfeed/internal/worker"
 	"log"
 	"os"
@@ -17,6 +18,16 @@ import (
 	"github.com/joho/godotenv"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"gorm.io/gorm"
+)
+
+const (
+	likeExchange   = "like.events"
+	likeQueue      = "like.events"
+	likeBindingKey = "like.*"
+
+	popularityExchange   = "video.popularity.events"
+	popularityQueue      = "video.popularity.events"
+	popularityBindingKey = "video.popularity.*"
 )
 
 func connectWithRetry(name string, maxRetries int, fn func() error) {
@@ -32,6 +43,38 @@ func connectWithRetry(name string, maxRetries int, fn func() error) {
 		time.Sleep(wait)
 	}
 	log.Fatalf("%s: 超过最大重试次数", name)
+}
+
+// runWorkerWithRetry 为每个 Worker 创建独立 Channel，断开后自动重连
+func runWorkerWithRetry(ctx context.Context, name string, conn *amqp.Connection, fn func(*amqp.Channel) error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+
+		ch, err := conn.Channel()
+		if err != nil {
+			log.Printf("%s: 创建 Channel 失败: %v, 5秒后重试", name, err)
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		if err := ch.Qos(50, 0, false); err != nil {
+			log.Printf("%s: QoS 设置失败: %v", name, err)
+		}
+
+		log.Printf("%s started, consuming", name)
+		if err := fn(ch); err != nil {
+			if ctx.Err() != nil {
+				ch.Close()
+				return
+			}
+			log.Printf("%s: %v, 5秒后重连...", name, err)
+		}
+		ch.Close()
+		time.Sleep(5 * time.Second)
+	}
 }
 
 func run() error {
@@ -86,6 +129,38 @@ func run() error {
 	})
 	defer conn.Close()
 
+	// 用临时 Channel 声明拓扑（持久化队列，声明一次即可）
+	topoCh, err := conn.Channel()
+	if err != nil {
+		log.Fatalf("Failed to open topology channel: %v", err)
+	}
+	if err := declareLikeTopology(topoCh); err != nil {
+		log.Fatalf("Failed to declare like topology: %v", err)
+	}
+	if cache != nil {
+		if err := declarePopularityTopology(topoCh); err != nil {
+			log.Fatalf("Failed to declare popularity topology: %v", err)
+		}
+	}
+	topoCh.Close()
+
+	// 准备 repo
+	videoRepo := video.NewVideoRepository(sqlDB)
+	likeRepo := video.NewLikeRepository(sqlDB)
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	// 每个 Worker 独立 Channel + 自动重连
+	go runWorkerWithRetry(ctx, "LikeWorker", conn, func(ch *amqp.Channel) error {
+		return worker.NewLikeWorker(ch, likeRepo, videoRepo, likeQueue).Run(ctx)
+	})
+	if cache != nil {
+		go runWorkerWithRetry(ctx, "PopularityWorker", conn, func(ch *amqp.Channel) error {
+			return worker.NewPopularityWorker(ch, cache, popularityQueue).Run(ctx)
+		})
+	}
+
 	rmq := &mq.RabbitMQ{Conn: conn}
 	timelineMQ, err := mq.NewTimelineMQ(rmq)
 	if err != nil {
@@ -95,7 +170,6 @@ func run() error {
 	worker.StartConsumer(timelineMQ, "video.timeline.update.queue", cache, rmq)
 	log.Println("Video timeline worker started")
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	<-ctx.Done()
 	return nil
@@ -105,4 +179,72 @@ func main() {
 	if err := run(); err != nil {
 		log.Fatalf("Error occurred: %v", err)
 	}
+}
+
+func declarePopularityTopology(ch *amqp.Channel) error {
+	if err := ch.ExchangeDeclare(
+		popularityExchange,
+		"topic",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	); err != nil {
+		return err
+	}
+
+	q, err := ch.QueueDeclare(
+		popularityQueue,
+		true,
+		false,
+		false,
+		false,
+		amqp.Table{"x-dead-letter-exchange": mq.DLXExchange},
+	)
+	if err != nil {
+		return err
+	}
+
+	return ch.QueueBind(
+		q.Name,
+		popularityBindingKey,
+		popularityExchange,
+		false,
+		nil,
+	)
+}
+
+func declareLikeTopology(ch *amqp.Channel) error {
+	if err := ch.ExchangeDeclare(
+		likeExchange,
+		"topic",
+		true,
+		false,
+		false,
+		false,
+		nil,
+	); err != nil {
+		return err
+	}
+
+	q, err := ch.QueueDeclare(
+		likeQueue,
+		true,
+		false,
+		false,
+		false,
+		amqp.Table{"x-dead-letter-exchange": mq.DLXExchange},
+	)
+	if err != nil {
+		return err
+	}
+
+	return ch.QueueBind(
+		q.Name,
+		likeBindingKey,
+		likeExchange,
+		false,
+		nil,
+	)
 }
