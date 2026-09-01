@@ -4,9 +4,11 @@ import (
 	"kirfeed/internal/account"
 	"kirfeed/internal/feed"
 	rediscache "kirfeed/internal/infra/cache"
+	"kirfeed/internal/infra/jwt"
 	jwtmiddleware "kirfeed/internal/infra/jwt"
 	"kirfeed/internal/infra/mq"
 	"kirfeed/internal/video"
+	"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -49,23 +51,41 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 	videoRepository := video.NewVideoRepository(db)
 	videoService := video.NewVideoService(videoRepository, cache)
 	videoHandler := video.NewVideoHandler(videoService, accountService)
-	likeRepository := video.NewLikeRepository(db)
-	likeService := video.NewLikeService(likeRepository, videoRepository, cache, nil, nil)
-	likeHandler := video.NewLikeHandler(likeService)
 	videoGroup := r.Group("/video")
 	{
-		videoGroup.POST("/detail", videoHandler.GetDetail)
-		authorized := videoGroup.Group("", jwtmiddleware.JWTAuth(accountRepository, cache))
-		authorized.POST("/publish", videoHandler.PublishVideo)
-		authorized.POST("/uploadVideo", videoHandler.UploadVideo)
-		authorized.POST("/uploadCover", videoHandler.UploadCover)
-		authorized.POST("/delete", videoHandler.DeleteVideo)
-		authorized.POST("/like", likeHandler.Like)
-		authorized.POST("/unlike", likeHandler.Unlike)
-		authorized.POST("/isLiked", likeHandler.IsLiked)
-		authorized.POST("/myLikedVideos", likeHandler.ListMyLikedVideos)
+		videoGroup.POST("/getDetail", videoHandler.GetDetail)
 	}
-
+	protectedVideoGroup := videoGroup.Group("")
+	protectedVideoGroup.Use(jwt.JWTAuth(accountRepository, cache))
+	{
+		protectedVideoGroup.POST("/uploadVideo", videoHandler.UploadVideo)
+		protectedVideoGroup.POST("/uploadCover", videoHandler.UploadCover)
+		protectedVideoGroup.POST("/publish", videoHandler.PublishVideo)
+		protectedVideoGroup.POST("/delete", videoHandler.DeleteVideo)
+	}
+	// like
+	likeMQ, err := mq.NewLikeMQ(rmq)
+	if err != nil {
+		log.Printf("LikeMQ init failed (mq disabled): %v", err)
+		likeMQ = nil
+	}
+	popularityMQ, err := mq.NewPopularityMQ(rmq)
+	if err != nil {
+		log.Printf("PopularityMQ init failed (mq disabled): %v", err)
+		popularityMQ = nil
+	}
+	likeRepository := video.NewLikeRepository(db)
+	likeService := video.NewLikeService(likeRepository, videoRepository, cache, likeMQ, popularityMQ)
+	likeHandler := video.NewLikeHandler(likeService)
+	likeGroup := r.Group("/like")
+	protectedLikeGroup := likeGroup.Group("")
+	protectedLikeGroup.Use(jwt.JWTAuth(accountRepository, cache))
+	{
+		protectedLikeGroup.POST("/like", likeHandler.Like)
+		protectedLikeGroup.POST("/unlike", likeHandler.Unlike)
+		protectedLikeGroup.POST("/isLiked", likeHandler.IsLiked)
+		protectedLikeGroup.POST("/listMyLikedVideos", likeHandler.ListMyLikedVideos)
+	}
 	// feed
 	feedRepository := feed.NewFeedRepository(db)
 	feedService := feed.NewFeedService(feedRepository, cache)

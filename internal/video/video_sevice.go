@@ -16,11 +16,14 @@ type VideoService struct {
 	repo     *VideoRepository
 	cache    *rediscache.Client
 	cacheTTL time.Duration
-	//popularityMQ *mq.PopularityMQ
 }
 
 func NewVideoService(repo *VideoRepository, cache *rediscache.Client) *VideoService {
-	return &VideoService{repo: repo, cache: cache, cacheTTL: 5 * time.Minute}
+	return &VideoService{
+		repo:     repo,
+		cache:    cache,
+		cacheTTL: 5 * time.Minute,
+	}
 }
 
 func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
