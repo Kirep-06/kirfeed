@@ -5,7 +5,6 @@ import (
 	"kirfeed/internal/feed"
 	rediscache "kirfeed/internal/infra/cache"
 	"kirfeed/internal/infra/jwt"
-	jwtmiddleware "kirfeed/internal/infra/jwt"
 	"kirfeed/internal/infra/mq"
 	"kirfeed/internal/video"
 	"log"
@@ -40,10 +39,10 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 		accountGroup.POST("/refresh", accountHandler.Refresh)
 		accountGroup.POST("/findByID", accountHandler.FindByID)
 		accountGroup.POST("/findByUsername", accountHandler.FindByUsername)
-		accountGroup.POST("/logout", jwtmiddleware.JWTAuth(accountRepository, cache), accountHandler.Logout)
-		accountGroup.POST("/rename", jwtmiddleware.JWTAuth(accountRepository, cache), accountHandler.Rename)
-		accountGroup.POST("/uploadAvatar", jwtmiddleware.JWTAuth(accountRepository, cache), accountHandler.UploadAvatar)
-		accountGroup.POST("/updateProfile", jwtmiddleware.JWTAuth(accountRepository, cache), accountHandler.UpdateProfile)
+		accountGroup.POST("/logout", jwt.JWTAuth(accountRepository, cache), accountHandler.Logout)
+		accountGroup.POST("/rename", jwt.JWTAuth(accountRepository, cache), accountHandler.Rename)
+		accountGroup.POST("/uploadAvatar", jwt.JWTAuth(accountRepository, cache), accountHandler.UploadAvatar)
+		accountGroup.POST("/updateProfile", jwt.JWTAuth(accountRepository, cache), accountHandler.UpdateProfile)
 		accountGroup.POST("/changePassword", accountHandler.ChangePassword)
 	}
 
@@ -90,7 +89,9 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 	feedRepository := feed.NewFeedRepository(db)
 	feedService := feed.NewFeedService(feedRepository, cache)
 	feedHandler := feed.NewFeedHandler(feedService)
-	r.POST("/feed/latest", feedHandler.ListLatest)
+	feedGroup := r.Group("/feed")
+	feedGroup.Use(jwt.SoftJWTAuth(accountRepository, cache))
+	feedGroup.POST("/latest", feedHandler.ListLatest)
 
 	return r
 }
