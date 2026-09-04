@@ -40,3 +40,15 @@ func (repo *FeedRepository) GetByIDs(ctx context.Context, ids []uint) ([]*video.
 	}
 	return videos, nil
 }
+
+func (repo *FeedRepository) ListByPopularity(ctx context.Context, limit int, popularityBefore int64, timeBefore time.Time, idBefore uint) ([]*video.Video, error) {
+	var videos []*video.Video
+	query := repo.db.WithContext(ctx).Model(&video.Video{}).Order("popularity DESC, create_time DESC, id DESC")
+	if !timeBefore.IsZero() && idBefore > 0 {
+		query = query.Where("(popularity < ?) OR (popularity = ? AND create_time < ?) OR (popularity = ? AND create_time = ? AND id < ?)", popularityBefore, popularityBefore, timeBefore, popularityBefore, timeBefore, idBefore)
+	}
+	if err := query.Limit(limit).Find(&videos).Error; err != nil {
+		return nil, err
+	}
+	return videos, nil
+}

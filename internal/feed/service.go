@@ -19,6 +19,7 @@ import (
 
 type FeedService struct {
 	repo         *FeedRepository
+	likeRepo     *video.LikeRepository
 	rediscache   *rediscache.Client
 	localcache   *cache.Cache
 	cacheTTL     time.Duration
@@ -29,8 +30,8 @@ type CachedFeedData struct {
 	PublicVideos []video.Video `json:"public_videos"`
 }
 
-func NewFeedService(repo *FeedRepository, rediscache *rediscache.Client) *FeedService {
-	return &FeedService{repo: repo, rediscache: rediscache, localcache: cache.New(3*time.Second, 5*time.Second), cacheTTL: 24 * time.Hour}
+func NewFeedService(repo *FeedRepository, likeRepo *video.LikeRepository, rediscache *rediscache.Client) *FeedService {
+	return &FeedService{repo: repo, likeRepo: likeRepo, rediscache: rediscache, localcache: cache.New(3*time.Second, 5*time.Second), cacheTTL: 24 * time.Hour}
 }
 
 func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*video.Video, error) {
@@ -315,6 +316,10 @@ func (f *FeedService) buildFeedVideos(ctx context.Context, videos []*video.Video
 	for i, v := range videos {
 		videoIDs[i] = v.ID
 	}
+	likedMap, err := f.likeRepo.BatchGetLiked(ctx, videoIDs, viewerAccountID)
+	if err != nil {
+		return nil, err
+	}
 
 	for _, video := range videos {
 		feedVideos = append(feedVideos, FeedVideoItem{
@@ -326,9 +331,92 @@ func (f *FeedService) buildFeedVideos(ctx context.Context, videos []*video.Video
 			CoverURL:    video.CoverURL,
 			CreateTime:  video.CreateTime.Unix(),
 			LikesCount:  video.LikesCount,
+			IsLiked:     likedMap[video.ID],
 		})
 	}
 	return feedVideos, nil
+}
+
+func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf int64, offset int, viewerID uint, latestPopularity int64, latestBefore time.Time, latestID uint) (ListByPopularityResponse, error) {
+	// Redis 热榜（稳定分页：as_of + offset）
+	if f.rediscache != nil {
+		asOf := time.Now().UTC().Truncate(time.Minute)
+		if reqAsOf > 0 {
+			asOf = time.Unix(reqAsOf, 0).UTC().Truncate(time.Minute)
+		}
+		keys := make([]string, 60)
+		for i := range keys {
+			keys[i] = f.rediscache.Key("hot:video:1m:%s", asOf.Add(-time.Duration(i)*time.Minute).Format("200601021504"))
+		}
+		dest := f.rediscache.Key("hot:video:merge:1m:%s", asOf.Format("200601021504"))
+		opCtx, cancel := context.WithTimeout(ctx, 80*time.Millisecond)
+		defer cancel()
+		
+		exists, err := f.rediscache.Exists(opCtx, dest)
+		if err == nil && !exists {
+			err = f.rediscache.ZUnionStore(opCtx, dest, keys, "SUM")
+			if err == nil {
+				err = f.rediscache.Expire(opCtx, dest, 2*time.Minute)
+			}
+		}
+		if err == nil {
+			members, readErr := f.rediscache.ZRevRange(opCtx, dest, int64(offset), int64(offset+limit-1))
+			if readErr == nil {
+				if len(members) == 0 && offset > 0 {
+					return ListByPopularityResponse{VideoList: []FeedVideoItem{}, AsOf: asOf.Unix(), NextOffset: offset}, nil
+				}
+				if len(members) > 0 {
+					ids := make([]uint, 0, len(members))
+					for _, member := range members {
+						id, parseErr := strconv.ParseUint(member, 10, 64)
+						if parseErr == nil && id > 0 {
+							ids = append(ids, uint(id))
+						}
+					}
+					videos, dbErr := f.repo.GetByIDs(ctx, ids)
+					if dbErr == nil {
+						byID := make(map[uint]*video.Video, len(videos))
+						for _, v := range videos {
+							byID[v.ID] = v
+						}
+						ordered := make([]*video.Video, 0, len(ids))
+						for _, id := range ids {
+							if v := byID[id]; v != nil {
+								ordered = append(ordered, v)
+							}
+						}
+						items, buildErr := f.buildFeedVideos(ctx, ordered, viewerID)
+						if buildErr != nil {
+							return ListByPopularityResponse{}, buildErr
+						}
+						resp := ListByPopularityResponse{VideoList: items, AsOf: asOf.Unix(), NextOffset: offset + len(members), HasMore: len(members) == limit}
+						setPopularityCursor(&resp, ordered)
+						return resp, nil
+					}
+				}
+			}
+		}
+	}
+	videos, err := f.repo.ListByPopularity(ctx, limit, latestPopularity, latestBefore, latestID)
+	if err != nil {
+		return ListByPopularityResponse{}, err
+	}
+	items, err := f.buildFeedVideos(ctx, videos, viewerID)
+	if err != nil {
+		return ListByPopularityResponse{}, err
+	}
+	resp := ListByPopularityResponse{VideoList: items, HasMore: len(videos) == limit}
+	setPopularityCursor(&resp, videos)
+	return resp, nil
+}
+
+func setPopularityCursor(resp *ListByPopularityResponse, videos []*video.Video) {
+	if len(videos) == 0 {
+		return
+	}
+	last := videos[len(videos)-1]
+	popularity, before, id := last.Popularity, last.CreateTime, last.ID
+	resp.NextLatestPopularity, resp.NextLatestBefore, resp.NextLatestIDBefore = &popularity, &before, &id
 }
 
 func buildOrderedResult(orderedIDs []uint, dataMap map[uint]*video.Video) []*video.Video {
