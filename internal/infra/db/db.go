@@ -28,6 +28,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&video.OutboxMsg{},
 		&video.Video{},
 		&video.Like{},
+		&video.Comment{},
 	)
 }
 

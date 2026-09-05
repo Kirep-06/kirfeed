@@ -21,9 +21,13 @@ import (
 )
 
 const (
-	likeExchange   = "like.events"
-	likeQueue      = "like.events"
-	likeBindingKey = "like.*"
+	likeExchange      = "like.events"
+	likeQueue         = "like.events"
+	likeBindingKey    = "like.*"
+	
+	commentExchange   = "comment.events"
+	commentQueue      = "comment.events"
+	commentBindingKey = "comment.*"
 
 	popularityExchange   = "video.popularity.events"
 	popularityQueue      = "video.popularity.events"
@@ -137,6 +141,9 @@ func run() error {
 	if err := declareLikeTopology(topoCh); err != nil {
 		log.Fatalf("Failed to declare like topology: %v", err)
 	}
+	if err := mq.DeclareTopic(topoCh, commentExchange, commentQueue, commentBindingKey); err != nil {
+		log.Fatalf("Failed to declare comment topology: %v", err)
+	}
 	if cache != nil {
 		if err := declarePopularityTopology(topoCh); err != nil {
 			log.Fatalf("Failed to declare popularity topology: %v", err)
@@ -147,6 +154,7 @@ func run() error {
 	// 准备 repo
 	videoRepo := video.NewVideoRepository(sqlDB)
 	likeRepo := video.NewLikeRepository(sqlDB)
+	commentRepo := video.NewCommentRepository(sqlDB)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -154,6 +162,9 @@ func run() error {
 	// 每个 Worker 独立 Channel + 自动重连
 	go runWorkerWithRetry(ctx, "LikeWorker", conn, func(ch *amqp.Channel) error {
 		return worker.NewLikeWorker(ch, likeRepo, videoRepo, likeQueue).Run(ctx)
+	})
+	go runWorkerWithRetry(ctx, "CommentWorker", conn, func(ch *amqp.Channel) error {
+		return worker.NewCommentWorker(ch, commentRepo, videoRepo, commentQueue).Run(ctx)
 	})
 	if cache != nil {
 		go runWorkerWithRetry(ctx, "PopularityWorker", conn, func(ch *amqp.Channel) error {

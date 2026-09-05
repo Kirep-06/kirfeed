@@ -85,6 +85,20 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 		protectedLikeGroup.POST("/isLiked", likeHandler.IsLiked)
 		protectedLikeGroup.POST("/listMyLikedVideos", likeHandler.ListMyLikedVideos)
 	}
+	commentMQ, err := mq.NewCommentMQ(rmq)
+	if err != nil {
+		log.Printf("CommentMQ init failed (mq disabled): %v", err)
+		commentMQ = nil
+	}
+	commentRepository := video.NewCommentRepository(db)
+	commentService := video.NewCommentService(commentRepository, videoRepository, cache, commentMQ, popularityMQ)
+	commentHandler := video.NewCommentHandler(commentService, accountService)
+	commentGroup := r.Group("/comment")
+	commentGroup.POST("/listAll", commentHandler.GetAllComments)
+	protectedCommentGroup := commentGroup.Group("")
+	protectedCommentGroup.Use(jwt.JWTAuth(accountRepository, cache))
+	protectedCommentGroup.POST("/publish", commentHandler.PublishComment)
+	protectedCommentGroup.POST("/delete", commentHandler.DeleteComment)
 	// feed
 	feedRepository := feed.NewFeedRepository(db)
 	feedService := feed.NewFeedService(feedRepository, likeRepository, cache)
