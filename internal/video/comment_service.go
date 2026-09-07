@@ -20,20 +20,27 @@ type CommentService struct {
 }
 
 func NewCommentService(repo *CommentRepository, videoRepo *VideoRepository, cache *rediscache.Client, commentMQ *mq.CommentMQ, popularityMQ *mq.PopularityMQ) *CommentService {
-	return &CommentService{repo: repo, VideoRepository: videoRepo, cache: cache, commentMQ: commentMQ, popularityMQ: popularityMQ}
+	return &CommentService{
+		repo:            repo,
+		VideoRepository: videoRepo,
+		cache:           cache,
+		commentMQ:       commentMQ,
+		popularityMQ:    popularityMQ,
+	}
 }
 
 func (s *CommentService) Publish(ctx context.Context, comment *Comment) error {
 	if comment == nil {
-		return errors.New("comment is nil")
+		return apierror.New(apierror.ErrValidation, "comment is nil")
 	}
 	comment.Username = strings.TrimSpace(comment.Username)
 	comment.Content = strings.TrimSpace(comment.Content)
+	
 	if comment.VideoID == 0 || comment.AuthorID == 0 {
-		return errors.New("video_id and author_id are required")
+		return apierror.New(apierror.ErrValidation, "video_id and author_id are required")
 	}
 	if comment.Content == "" {
-		return errors.New("content is required")
+		return apierror.New(apierror.ErrValidation, "content is required")
 	}
 
 	exists, err := s.VideoRepository.IsExist(ctx, comment.VideoID)
@@ -41,7 +48,7 @@ func (s *CommentService) Publish(ctx context.Context, comment *Comment) error {
 		return err
 	}
 	if !exists {
-		return errors.New("video not found")
+		return apierror.New(apierror.ErrNotFound, "video not found")
 	}
 
 	mysqlEnqueued := false
@@ -65,7 +72,7 @@ func (s *CommentService) Publish(ctx context.Context, comment *Comment) error {
 		if err := s.repo.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 			if err := tx.Select("id").First(&Video{}, comment.VideoID).Error; err != nil {
 				if errors.Is(err, gorm.ErrRecordNotFound) {
-					return errors.New("video not found")
+					return apierror.New(apierror.ErrNotFound, "video not found")
 				}
 				return err
 			}
@@ -92,7 +99,7 @@ func (s *CommentService) Delete(ctx context.Context, commentID uint, accountID u
 		return err
 	}
 	if comment == nil {
-		return errors.New("comment not found")
+		return apierror.New(apierror.ErrNotFound, "comment not found")
 	}
 	if comment.AuthorID != accountID {
 		return apierror.ErrUnauthorized
@@ -111,7 +118,7 @@ func (s *CommentService) GetAll(ctx context.Context, videoID uint) ([]Comment, e
 		return nil, err
 	}
 	if !exists {
-		return nil, errors.New("video not found")
+		return nil, apierror.New(apierror.ErrNotFound, "video not found")
 	}
 	return s.repo.GetAllComments(ctx, videoID)
 }

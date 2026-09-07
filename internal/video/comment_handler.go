@@ -4,6 +4,7 @@ import (
 	"kirfeed/internal/account"
 	"kirfeed/internal/apierror"
 	"kirfeed/internal/infra/jwt"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
@@ -16,23 +17,24 @@ type CommentHandler struct {
 func NewCommentHandler(service *CommentService, accountService *account.AccountService) *CommentHandler {
 	return &CommentHandler{service: service, accountService: accountService}
 }
+
 func (h *CommentHandler) PublishComment(c *gin.Context) {
 	var req PublishCommentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrValidation), gin.H{"error": err.Error()})
 		return
 	}
 	if req.Content == "" {
-		c.JSON(400, gin.H{"error": "content is required"})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrValidation), gin.H{"error": "content is required"})
 		return
 	}
 	if req.VideoID <= 0 {
-		c.JSON(400, gin.H{"error": "video_id is required"})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrValidation), gin.H{"error": "video_id is required"})
 		return
 	}
 	authorId, err := jwt.GetAccountID(c)
 	if err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrUnauthorized), gin.H{"error": err.Error()})
 		return
 	}
 	user, err := h.accountService.FindByID(c.Request.Context(), authorId)
@@ -50,22 +52,22 @@ func (h *CommentHandler) PublishComment(c *gin.Context) {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(200, gin.H{"message": "comment published successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "comment published successfully"})
 }
 
 func (h *CommentHandler) DeleteComment(c *gin.Context) {
 	var req DeleteCommentRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrValidation), gin.H{"error": err.Error()})
 		return
 	}
 	accountID, err := jwt.GetAccountID(c)
 	if err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrUnauthorized), gin.H{"error": err.Error()})
 		return
 	}
 	if req.CommentID <= 0 {
-		c.JSON(400, gin.H{"error": "comment_id is required"})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrValidation), gin.H{"error": "comment_id is required"})
 		return
 	}
 	if err := h.service.Delete(c.Request.Context(), req.CommentID, accountID); err != nil {
@@ -73,17 +75,17 @@ func (h *CommentHandler) DeleteComment(c *gin.Context) {
 		return
 	}
 
-	c.JSON(200, gin.H{"message": "comment deleted successfully"})
+	c.JSON(http.StatusOK, gin.H{"message": "comment deleted successfully"})
 }
 
 func (h *CommentHandler) GetAllComments(c *gin.Context) {
 	var req GetAllCommentsRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrValidation), gin.H{"error": err.Error()})
 		return
 	}
 	if req.VideoID == 0 {
-		c.JSON(400, gin.H{"error": "video_id is required"})
+		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrValidation), gin.H{"error": "video_id is required"})
 		return
 	}
 	comments, err := h.service.GetAll(c.Request.Context(), req.VideoID)
@@ -94,5 +96,5 @@ func (h *CommentHandler) GetAllComments(c *gin.Context) {
 	if comments == nil {
 		comments = []Comment{}
 	}
-	c.JSON(200, comments)
+	c.JSON(http.StatusOK, comments)
 }
