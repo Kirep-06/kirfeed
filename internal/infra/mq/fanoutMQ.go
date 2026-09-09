@@ -16,7 +16,7 @@ const (
 	fanoutExchange   = "video.fanout.events"
 	fanoutQueue      = "video.fanout.queue"
 	fanoutBindingKey = "video.fanout.*"
-	
+
 	fanoutPublishRK  = "video.fanout.publish"
 )
 
@@ -50,9 +50,6 @@ func (f *FanoutMQ) PublishVideo(ctx context.Context, videoID, authorID uint, cre
 	}
 	if videoID == 0 || authorID == 0 {
 		return errors.New("videoID and authorID are required")
-	}
-	if createTime.IsZero() {
-		return errors.New("createTime is required")
 	}
 	id, err := newEventID(16)
 	if err != nil {
