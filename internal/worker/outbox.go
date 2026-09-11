@@ -15,7 +15,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func StartOutboxPoller(db *gorm.DB, tmq *mq.TimelineMQ) {
+func StartOutboxPoller(db *gorm.DB, tmq *mq.TimelineMQ, fmq *mq.FanoutMQ) {
 	if db == nil || tmq == nil {
 		log.Printf("Outbox poller disabled: timeline mq is not initialized")
 		return
@@ -33,10 +33,10 @@ func StartOutboxPoller(db *gorm.DB, tmq *mq.TimelineMQ) {
 			}
 
 			for _, msg := range messages {
-				err := tmq.PublishVideo(context.Background(), msg.VideoID, msg.CreateTime)
-
+				err1 := tmq.PublishVideo(context.Background(), msg.VideoID, msg.CreateTime)
+				err2 := fmq.PublishVideo(context.Background(), msg.VideoID, msg.AuthorID, msg.CreateTime)
 				// 之后并发发FanoutMQ
-				if err == nil {
+				if err1 == nil && err2 == nil {
 					if err := db.Delete(&msg).Error; err != nil {
 						log.Printf("删除 outbox 消息失败: id=%d, err=%v", msg.ID, err)
 					}
