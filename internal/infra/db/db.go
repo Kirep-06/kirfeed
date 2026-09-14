@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"kirfeed/internal/account"
 	"kirfeed/internal/config"
+	"kirfeed/internal/social"
 	"kirfeed/internal/video"
 
 	"gorm.io/driver/mysql"
@@ -29,6 +30,7 @@ func AutoMigrate(db *gorm.DB) error {
 		&video.Video{},
 		&video.Like{},
 		&video.Comment{},
+		&social.Social{},
 	)
 }
 
