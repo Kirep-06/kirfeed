@@ -126,3 +126,14 @@ func (c *Client) Unlock(ctx context.Context, key string, token string) error {
 	_, err := unlockScript.Run(ctx, c.rdb, []string{key}, token).Result()
 	return err
 }
+
+func (c *Client) DelByPattern(ctx context.Context, pattern string) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
+	iter := c.rdb.Scan(ctx, 0, pattern, 0).Iterator()
+	for iter.Next(ctx) {
+		_ = c.rdb.Del(ctx, iter.Val())
+	}
+	return iter.Err()
+}
