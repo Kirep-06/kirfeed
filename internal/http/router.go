@@ -6,6 +6,7 @@ import (
 	rediscache "kirfeed/internal/infra/cache"
 	"kirfeed/internal/infra/jwt"
 	"kirfeed/internal/infra/mq"
+	"kirfeed/internal/social"
 	"kirfeed/internal/video"
 	"log"
 	"net/http"
@@ -99,6 +100,22 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 	protectedCommentGroup.Use(jwt.JWTAuth(accountRepository, cache))
 	protectedCommentGroup.POST("/publish", commentHandler.PublishComment)
 	protectedCommentGroup.POST("/delete", commentHandler.DeleteComment)
+	// social
+	socialMQ, err := mq.NewSocialMQ(rmq)
+	if err != nil {
+		log.Printf("SocialMQ init failed (mq disabled): %v", err)
+		socialMQ = nil
+	}
+	socialRepository := social.NewSocialRepository(db)
+	socialService := social.NewSocialService(socialRepository, accountRepository, socialMQ, cache)
+	socialHandler := social.NewSocialHandler(socialService)
+	socialGroup := r.Group("/social")
+	socialGroup.Use(jwt.JWTAuth(accountRepository, cache))
+	socialGroup.POST("/follow", socialHandler.Follow)
+	socialGroup.POST("/unfollow", socialHandler.Unfollow)
+	socialGroup.POST("/getAllFollowers", socialHandler.GetAllFollowers)
+	socialGroup.POST("/getAllVloggers", socialHandler.GetAllVloggers)
+	socialGroup.POST("/getCounts", socialHandler.GetCounts)
 	// feed
 	feedRepository := feed.NewFeedRepository(db)
 	feedService := feed.NewFeedService(feedRepository, likeRepository, cache)
