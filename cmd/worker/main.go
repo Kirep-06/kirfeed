@@ -6,6 +6,7 @@ import (
 	rediscache "kirfeed/internal/infra/cache"
 	"kirfeed/internal/infra/db"
 	"kirfeed/internal/infra/mq"
+	"kirfeed/internal/social"
 	"kirfeed/internal/video"
 	"kirfeed/internal/worker"
 	"log"
@@ -21,10 +22,14 @@ import (
 )
 
 const (
-	likeExchange      = "like.events"
-	likeQueue         = "like.events"
-	likeBindingKey    = "like.*"
-	
+	socialExchange   = "social.events"
+	socialQueue      = "social.events"
+	socialBindingKey = "social.*"
+
+	likeExchange   = "like.events"
+	likeQueue      = "like.events"
+	likeBindingKey = "like.*"
+
 	commentExchange   = "comment.events"
 	commentQueue      = "comment.events"
 	commentBindingKey = "comment.*"
@@ -141,6 +146,9 @@ func run() error {
 	if err := declareLikeTopology(topoCh); err != nil {
 		log.Fatalf("Failed to declare like topology: %v", err)
 	}
+	if err := mq.DeclareTopic(topoCh, socialExchange, socialQueue, socialBindingKey); err != nil {
+		log.Fatalf("Failed to declare social topology: %v", err)
+	}
 	if err := mq.DeclareTopic(topoCh, commentExchange, commentQueue, commentBindingKey); err != nil {
 		log.Fatalf("Failed to declare comment topology: %v", err)
 	}
@@ -155,6 +163,7 @@ func run() error {
 	videoRepo := video.NewVideoRepository(sqlDB)
 	likeRepo := video.NewLikeRepository(sqlDB)
 	commentRepo := video.NewCommentRepository(sqlDB)
+	socialRepo := social.NewSocialRepository(sqlDB)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -165,6 +174,9 @@ func run() error {
 	})
 	go runWorkerWithRetry(ctx, "CommentWorker", conn, func(ch *amqp.Channel) error {
 		return worker.NewCommentWorker(ch, commentRepo, videoRepo, commentQueue).Run(ctx)
+	})
+	go runWorkerWithRetry(ctx, "SocialWorker", conn, func(ch *amqp.Channel) error {
+		return worker.NewSocialWorker(ch, socialRepo, socialQueue).Run(ctx)
 	})
 	if cache != nil {
 		go runWorkerWithRetry(ctx, "PopularityWorker", conn, func(ch *amqp.Channel) error {
