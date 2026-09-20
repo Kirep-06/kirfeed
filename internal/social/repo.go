@@ -21,86 +21,83 @@ func (r *SocialRepository) Follow(ctx context.Context, social *Social) error {
 
 func (r *SocialRepository) Unfollow(ctx context.Context, social *Social) error {
 	return r.db.WithContext(ctx).
-		Where("follower_id = ? AND vlogger_id = ?", social.FollowerID, social.VloggerID).
+		Where("follower_id = ? AND vlogger_id = ?", social.FollowerID, social.FolloweeID).
 		Delete(&Social{}).Error
 }
 
-func (r *SocialRepository) GetAllFollowers(ctx context.Context, VloggerID uint) ([]*account.Account, error) {
-	var relations []Social
-	if err := r.db.WithContext(ctx).
-		Model(&Social{}).
-		Where("vlogger_id = ?", VloggerID).
-		Limit(200).
-		Find(&relations).Error; err != nil {
-		return nil, err
-	}
-
-	followerIDs := make([]uint, 0, len(relations))
-	for _, rel := range relations {
-		followerIDs = append(followerIDs, rel.FollowerID)
-	}
-	if len(followerIDs) == 0 {
-		return []*account.Account{}, nil
-	}
-
-	var followers []*account.Account
-	if err := r.db.WithContext(ctx).
-		Model(&account.Account{}).
-		Where("id IN ?", followerIDs).
-		Find(&followers).Error; err != nil {
-		return nil, err
-	}
-	return followers, nil
+func (r *SocialRepository) GetFollowers(ctx context.Context, followeeID uint, limit int, cursor uint) ([]*account.Account, uint, bool, error) {
+	return r.listAccounts(ctx, "vlogger_id", followeeID, limit, cursor, true)
 }
 
-func (r *SocialRepository) GetAllVloggers(ctx context.Context, FollowerID uint) ([]*account.Account, error) {
+func (r *SocialRepository) GetFollowees(ctx context.Context, followerID uint, limit int, cursor uint) ([]*account.Account, uint, bool, error) {
+	return r.listAccounts(ctx, "follower_id", followerID, limit, cursor, false)
+}
+
+func (r *SocialRepository) listAccounts(ctx context.Context, relationColumn string, ownerID uint, limit int, cursor uint, followers bool) ([]*account.Account, uint, bool, error) {
 	var relations []Social
-	if err := r.db.WithContext(ctx).
-		Model(&Social{}).
-		Where("follower_id = ?", FollowerID).
-		Limit(200).
-		Find(&relations).Error; err != nil {
-		return nil, err
+	query := r.db.WithContext(ctx).Model(&Social{}).Where(relationColumn+" = ?", ownerID).Order("id DESC")
+	if cursor != 0 {
+		query = query.Where("id < ?", cursor)
 	}
-
-	vloggerIDs := make([]uint, 0, len(relations))
+	if err := query.Limit(limit + 1).Find(&relations).Error; err != nil {
+		return nil, 0, false, err
+	}
+	hasMore := len(relations) > limit
+	if hasMore {
+		relations = relations[:limit]
+	}
+	if len(relations) == 0 {
+		return []*account.Account{}, 0, false, nil
+	}
+	ids := make([]uint, 0, len(relations))
 	for _, rel := range relations {
-		vloggerIDs = append(vloggerIDs, rel.VloggerID)
+		if followers {
+			ids = append(ids, rel.FollowerID)
+		} else {
+			ids = append(ids, rel.FolloweeID)
+		}
 	}
-	if len(vloggerIDs) == 0 {
-		return []*account.Account{}, nil
+	var accounts []*account.Account
+	if err := r.db.WithContext(ctx).Where("id IN ?", ids).Find(&accounts).Error; err != nil {
+		return nil, 0, false, err
 	}
-
-	var vloggers []*account.Account
-	if err := r.db.WithContext(ctx).
-		Model(&account.Account{}).
-		Where("id IN ?", vloggerIDs).
-		Find(&vloggers).Error; err != nil {
-		return nil, err
+	byID := make(map[uint]*account.Account, len(accounts))
+	for _, acc := range accounts {
+		byID[acc.ID] = acc
 	}
-	return vloggers, nil
+	ordered := make([]*account.Account, 0, len(relations))
+	for _, id := range ids {
+		if acc := byID[id]; acc != nil {
+			ordered = append(ordered, acc)
+		}
+	}
+	var nextCursor uint
+	if hasMore {
+		nextCursor = relations[len(relations)-1].ID
+	}
+	return ordered, nextCursor, hasMore, nil
 }
 
 func (r *SocialRepository) IsFollowed(ctx context.Context, social *Social) (bool, error) {
 	var count int64
 	if err := r.db.WithContext(ctx).
 		Model(&Social{}).
-		Where("follower_id = ? AND vlogger_id = ?", social.FollowerID, social.VloggerID).
+		Where("follower_id = ? AND vlogger_id = ?", social.FollowerID, social.FolloweeID).
 		Count(&count).Error; err != nil {
 		return false, err
 	}
 	return count > 0, nil
 }
 
-func (r *SocialRepository) CountFollowers(ctx context.Context, vloggerID uint) (int64, error) {
+func (r *SocialRepository) CountFollowers(ctx context.Context, followeeID uint) (int64, error) {
 	var count int64
-	if err := r.db.WithContext(ctx).Model(&Social{}).Where("vlogger_id = ?", vloggerID).Count(&count).Error; err != nil {
+	if err := r.db.WithContext(ctx).Model(&Social{}).Where("vlogger_id = ?", followeeID).Count(&count).Error; err != nil {
 		return 0, err
 	}
 	return count, nil
 }
 
-func (r *SocialRepository) CountVloggers(ctx context.Context, followerID uint) (int64, error) {
+func (r *SocialRepository) CountFollowees(ctx context.Context, followerID uint) (int64, error) {
 	var count int64
 	if err := r.db.WithContext(ctx).Model(&Social{}).Where("follower_id = ?", followerID).Count(&count).Error; err != nil {
 		return 0, err

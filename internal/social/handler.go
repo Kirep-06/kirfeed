@@ -24,8 +24,8 @@ func (h *SocialHandler) Follow(c *gin.Context) {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	if req.VloggerID <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vlogger_id is required"})
+	if req.FolloweeID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "followee_id is required"})
 		return
 	}
 	FollowerID, err := jwt.GetAccountID(c)
@@ -35,7 +35,7 @@ func (h *SocialHandler) Follow(c *gin.Context) {
 	}
 	social := &Social{
 		FollowerID: FollowerID,
-		VloggerID:  req.VloggerID,
+		FolloweeID: req.FolloweeID,
 	}
 	if err := h.service.Follow(c.Request.Context(), social); err != nil {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
@@ -50,8 +50,8 @@ func (h *SocialHandler) Unfollow(c *gin.Context) {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	if req.VloggerID <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "vlogger_id is required"})
+	if req.FolloweeID <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "followee_id is required"})
 		return
 	}
 	FollowerID, err := jwt.GetAccountID(c)
@@ -61,7 +61,7 @@ func (h *SocialHandler) Unfollow(c *gin.Context) {
 	}
 	social := &Social{
 		FollowerID: FollowerID,
-		VloggerID:  req.VloggerID,
+		FolloweeID: req.FolloweeID,
 	}
 	if err := h.service.Unfollow(c.Request.Context(), social); err != nil {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
@@ -70,24 +70,27 @@ func (h *SocialHandler) Unfollow(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "unfollowed"})
 }
 
-func (h *SocialHandler) GetAllFollowers(c *gin.Context) {
-	var req GetAllFollowersRequest
+func (h *SocialHandler) GetFollowers(c *gin.Context) {
+	var req GetFollowersRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
 
-	vloggerID := req.VloggerID
-	if vloggerID == 0 {
+	followeeID := req.FolloweeID
+	if followeeID == 0 {
 		accountID, err := jwt.GetAccountID(c)
 		if err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 			return
 		}
-		vloggerID = accountID
+		followeeID = accountID
 	}
 
-	followers, err := h.service.GetAllFollowers(c.Request.Context(), vloggerID)
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 20
+	}
+	followers, nextCursor, hasMore, err := h.service.GetFollowers(c.Request.Context(), followeeID, req.Limit, req.Cursor)
 	if err != nil {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
@@ -95,12 +98,12 @@ func (h *SocialHandler) GetAllFollowers(c *gin.Context) {
 	if followers == nil {
 		followers = []*account.Account{}
 	}
-	followerCount, _ := h.service.CountFollowers(c.Request.Context(), vloggerID)
-	c.JSON(http.StatusOK, GetAllFollowersResponse{Followers: followers, FollowerCount: followerCount})
+	followerCount, _ := h.service.CountFollowers(c.Request.Context(), followeeID)
+	c.JSON(http.StatusOK, GetFollowersResponse{Followers: followers, FollowerCount: followerCount, NextCursor: nextCursor, HasMore: hasMore})
 }
 
-func (h *SocialHandler) GetAllVloggers(c *gin.Context) {
-	var req GetAllVloggersRequest
+func (h *SocialHandler) GetFollowees(c *gin.Context) {
+	var req GetFolloweesRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
@@ -116,16 +119,19 @@ func (h *SocialHandler) GetAllVloggers(c *gin.Context) {
 		followerID = accountID
 	}
 
-	vloggers, err := h.service.GetAllVloggers(c.Request.Context(), followerID)
+	if req.Limit <= 0 || req.Limit > 100 {
+		req.Limit = 20
+	}
+	followees, nextCursor, hasMore, err := h.service.GetFollowees(c.Request.Context(), followerID, req.Limit, req.Cursor)
 	if err != nil {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	if vloggers == nil {
-		vloggers = []*account.Account{}
+	if followees == nil {
+		followees = []*account.Account{}
 	}
-	vloggerCount, _ := h.service.CountVloggers(c.Request.Context(), followerID)
-	c.JSON(http.StatusOK, GetAllVloggersResponse{Vloggers: vloggers, VloggerCount: vloggerCount})
+	followeeCount, _ := h.service.CountFollowees(c.Request.Context(), followerID)
+	c.JSON(http.StatusOK, GetFolloweesResponse{Followees: followees, FolloweeCount: followeeCount, NextCursor: nextCursor, HasMore: hasMore})
 }
 
 func (h *SocialHandler) GetCounts(c *gin.Context) {
@@ -135,6 +141,6 @@ func (h *SocialHandler) GetCounts(c *gin.Context) {
 		return
 	}
 	followerCount, _ := h.service.CountFollowers(c.Request.Context(), accountID)
-	vloggerCount, _ := h.service.CountVloggers(c.Request.Context(), accountID)
-	c.JSON(http.StatusOK, SocialCounts{FollowerCount: followerCount, VloggerCount: vloggerCount})
+	followeeCount, _ := h.service.CountFollowees(c.Request.Context(), accountID)
+	c.JSON(http.StatusOK, SocialCounts{FollowerCount: followerCount, FolloweeCount: followeeCount})
 }

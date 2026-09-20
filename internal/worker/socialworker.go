@@ -93,7 +93,7 @@ func (w *SocialWorker) process(ctx context.Context, body []byte) error {
 		// 解析事件失败，直接丢弃
 		return nil
 	}
-	if evt.FollowerID == 0 || evt.VloggerID == 0 {
+	if evt.FollowerID == 0 || evt.FolloweeID == 0 {
 		return nil
 	}
 
@@ -101,7 +101,7 @@ func (w *SocialWorker) process(ctx context.Context, body []byte) error {
 	case "follow":
 		err := w.repo.Follow(ctx, &social.Social{
 			FollowerID: evt.FollowerID,
-			VloggerID:  evt.VloggerID,
+			FolloweeID: evt.FolloweeID,
 		})
 		if err == nil {
 			return nil
@@ -114,7 +114,7 @@ func (w *SocialWorker) process(ctx context.Context, body []byte) error {
 	case "unfollow":
 		return w.repo.Unfollow(ctx, &social.Social{
 			FollowerID: evt.FollowerID,
-			VloggerID:  evt.VloggerID,
+			FolloweeID: evt.FolloweeID,
 		})
 	default:
 		return nil

@@ -113,8 +113,8 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 	socialGroup.Use(jwt.JWTAuth(accountRepository, cache))
 	socialGroup.POST("/follow", socialHandler.Follow)
 	socialGroup.POST("/unfollow", socialHandler.Unfollow)
-	socialGroup.POST("/getAllFollowers", socialHandler.GetAllFollowers)
-	socialGroup.POST("/getAllVloggers", socialHandler.GetAllVloggers)
+	socialGroup.POST("/getFollowers", socialHandler.GetFollowers)
+	socialGroup.POST("/getFollowees", socialHandler.GetFollowees)
 	socialGroup.POST("/getCounts", socialHandler.GetCounts)
 	// feed
 	feedRepository := feed.NewFeedRepository(db)
