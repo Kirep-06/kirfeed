@@ -50,6 +50,7 @@ func (vs *VideoService) Publish(ctx context.Context, video *Video) error {
 		}
 
 		msg := OutboxMsg{
+			AuthorID:   video.AuthorID,
 			VideoID:    video.ID,
 			EventType:  "video_published",
 			Status:     "pending",

@@ -16,7 +16,8 @@ type Video struct {
 }
 
 type OutboxMsg struct {
-	ID         uint      `gorm:"primaryKey"`
+	ID         uint `gorm:"primaryKey"`
+	AuthorID   uint
 	VideoID    uint      `gorm:"index"`
 	EventType  string    `gorm:"type:varchar(50)"`
 	CreateTime time.Time `gorm:"autoCreateTime"`
