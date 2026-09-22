@@ -189,7 +189,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	worker.StartOutboxPoller(sqlDB, timelineMQ)
+	fanoutMQ, err := mq.NewFanoutMQ(rmq)
+	if err != nil {
+		return err
+	}
+	defer fanoutMQ.Close()
+	worker.StartOutboxPoller(sqlDB, timelineMQ, fanoutMQ)
 	worker.StartConsumer(timelineMQ, "video.timeline.update.queue", cache, rmq)
 	log.Println("Video timeline worker started")
 
