@@ -137,3 +137,10 @@ func (c *Client) DelByPattern(ctx context.Context, pattern string) error {
 	}
 	return iter.Err()
 }
+
+func (c *Client) Pipeline() redisv9.Pipeliner {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
+	return c.rdb.Pipeline()
+}

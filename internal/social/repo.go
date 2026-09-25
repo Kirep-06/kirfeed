@@ -104,3 +104,45 @@ func (r *SocialRepository) CountFollowees(ctx context.Context, followerID uint) 
 	}
 	return count, nil
 }
+
+func (r *SocialRepository) ListFollowerIDs(ctx context.Context, followeeID uint, limit int, cursor uint) ([]uint, uint, bool, error) {
+	return r.listRelationIDs(ctx, "vlogger_id", followeeID, "follower_id", limit, cursor)
+}
+
+func (r *SocialRepository) ListFolloweeIDs(ctx context.Context, followerID uint, limit int, cursor uint) ([]uint, uint, bool, error) {
+	return r.listRelationIDs(ctx, "follower_id", followerID, "vlogger_id", limit, cursor)
+}
+
+func (r *SocialRepository) listRelationIDs(ctx context.Context, ownerColumn string, ownerID uint, targetColumn string, limit int, cursor uint) ([]uint, uint, bool, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	var relations []Social
+	query := r.db.WithContext(ctx).Model(&Social{}).
+		Select("id", targetColumn).
+		Where(ownerColumn+" = ?", ownerID).
+		Order("id DESC")
+	if cursor != 0 {
+		query = query.Where("id < ?", cursor)
+	}
+	if err := query.Limit(limit + 1).Find(&relations).Error; err != nil {
+		return nil, 0, false, err
+	}
+	hasMore := len(relations) > limit
+	if hasMore {
+		relations = relations[:limit]
+	}
+	ids := make([]uint, 0, len(relations))
+	for _, relation := range relations {
+		if targetColumn == "follower_id" {
+			ids = append(ids, relation.FollowerID)
+		} else {
+			ids = append(ids, relation.FolloweeID)
+		}
+	}
+	var nextCursor uint
+	if hasMore {
+		nextCursor = relations[len(relations)-1].ID
+	}
+	return ids, nextCursor, hasMore, nil
+}

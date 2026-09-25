@@ -4,17 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	rediscache "kirfeed/internal/infra/cache"
 	"kirfeed/internal/infra/mq"
+	"kirfeed/internal/social"
 	"kirfeed/internal/video"
 	"log"
+	"math/rand/v2"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
+	"github.com/redis/go-redis/v9"
 )
 
 type FanoutWorker struct {
 	ch     *amqp.Channel
 	videos *video.VideoRepository
+	social *social.SocialRepository
+	cache  *rediscache.Client
 	queue  string
 }
 
@@ -25,6 +32,8 @@ func NewFanoutWorker(ch *amqp.Channel, videos *video.VideoRepository, queue stri
 		queue:  queue,
 	}
 }
+
+const FanoutThreshold = 1000
 
 func (w *FanoutWorker) Run(ctx context.Context) error {
 	if w == nil || w.ch == nil || w.videos == nil {
@@ -72,7 +81,7 @@ func (w *FanoutWorker) handleDelivery(ctx context.Context, d amqp.Delivery) {
 		if err := w.process(ctx, d.Body); err != nil {
 			if i >= maxRetries {
 				log.Printf("fanout worker: 重试 %d 次后仍失败, 丢弃: %v", maxRetries, err)
-				_ = d.Ack(false)
+				_ = d.Nack(false, false)
 				return
 			}
 			wait := time.Duration(1<<uint(i)) * time.Second
@@ -94,6 +103,65 @@ func (w *FanoutWorker) process(ctx context.Context, body []byte) error {
 		return nil
 	}
 
-	_ = ctx
+	followerCount, err := w.social.CountFollowers(ctx, evt.AuthorID)
+	if err != nil {
+		return err
+	}
+	if followerCount >= FanoutThreshold {
+
+	}
+
 	return nil
+}
+
+func (w *FanoutWorker) addAuthorOutbox(ctx context.Context, event mq.FanoutEvent) error {
+	if w.cache == nil {
+		return errors.New("cache is nil")
+	}
+
+	outboxkey := w.cache.Key("feed:author_outbox:%d", event.AuthorID)
+	if err := w.cache.ZAdd(ctx, outboxkey, redis.Z{
+		Score:  float64(event.CreateTime),
+		Member: fmt.Sprintf("%d", event.VideoID),
+	}); err != nil {
+		return err
+	}
+	return w.cache.ZRemRangeByRank(ctx, outboxkey, 0, -501)
+}
+
+func (w *FanoutWorker) addFollowerInbox(ctx context.Context, event mq.FanoutEvent) error {
+	if w.cache == nil || w.social == nil {
+		return errors.New("cache or social repository is nil")
+	}
+
+	const batchSize = 500
+	var cursor uint
+
+	for {
+		followerIDs, nextCursor, hasMore, err :=
+			w.social.ListFollowerIDs(ctx, event.AuthorID, batchSize, cursor)
+		if err != nil {
+			return err
+		}
+		pipe := w.cache.Pipeline()
+		for _, fid := range followerIDs {
+
+			inboxkey := fmt.Sprintf("feed:follower_inbox:%d", fid)
+			pipe.ZAdd(ctx, inboxkey, redis.Z{
+				Score:  float64(event.CreateTime),
+				Member: fmt.Sprintf("%d", event.VideoID),
+			})
+			if rand.Float64() < 0.01 { // 1% 概率裁剪
+				pipe.ZRemRangeByRank(ctx, inboxkey, 0, -501)
+			}
+		}
+		if _, err := pipe.Exec(ctx); err != nil {
+			return err
+		}
+
+		if !hasMore {
+			return nil
+		}
+		cursor = nextCursor
+	}
 }
