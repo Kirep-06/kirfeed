@@ -10,7 +10,6 @@ import (
 	"kirfeed/internal/social"
 	"kirfeed/internal/video"
 	"log"
-	"math/rand/v2"
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
@@ -25,10 +24,12 @@ type FanoutWorker struct {
 	queue  string
 }
 
-func NewFanoutWorker(ch *amqp.Channel, videos *video.VideoRepository, queue string) *FanoutWorker {
+func NewFanoutWorker(ch *amqp.Channel, videos *video.VideoRepository, socialRepo *social.SocialRepository, cache *rediscache.Client, queue string) *FanoutWorker {
 	return &FanoutWorker{
 		ch:     ch,
 		videos: videos,
+		social: socialRepo,
+		cache:  cache,
 		queue:  queue,
 	}
 }
@@ -36,7 +37,7 @@ func NewFanoutWorker(ch *amqp.Channel, videos *video.VideoRepository, queue stri
 const FanoutThreshold = 1000
 
 func (w *FanoutWorker) Run(ctx context.Context) error {
-	if w == nil || w.ch == nil || w.videos == nil {
+	if w == nil || w.ch == nil || w.videos == nil || w.social == nil || w.cache == nil {
 		return errors.New("fanout worker is not initialized")
 	}
 	if w.queue == "" {
@@ -108,10 +109,9 @@ func (w *FanoutWorker) process(ctx context.Context, body []byte) error {
 		return err
 	}
 	if followerCount >= FanoutThreshold {
-
+		return w.addAuthorOutbox(ctx, evt)
 	}
-
-	return nil
+	return w.addFollowerInbox(ctx, evt)
 }
 
 func (w *FanoutWorker) addAuthorOutbox(ctx context.Context, event mq.FanoutEvent) error {
@@ -119,7 +119,7 @@ func (w *FanoutWorker) addAuthorOutbox(ctx context.Context, event mq.FanoutEvent
 		return errors.New("cache is nil")
 	}
 
-	outboxkey := w.cache.Key("feed:author_outbox:%d", event.AuthorID)
+	outboxkey := w.cache.Key("%s", rediscache.AuthorOutboxKey(event.AuthorID))
 	if err := w.cache.ZAdd(ctx, outboxkey, redis.Z{
 		Score:  float64(event.CreateTime),
 		Member: fmt.Sprintf("%d", event.VideoID),
@@ -134,7 +134,7 @@ func (w *FanoutWorker) addFollowerInbox(ctx context.Context, event mq.FanoutEven
 		return errors.New("cache or social repository is nil")
 	}
 
-	const batchSize = 500
+	const batchSize = 100
 	var cursor uint
 
 	for {
@@ -143,17 +143,20 @@ func (w *FanoutWorker) addFollowerInbox(ctx context.Context, event mq.FanoutEven
 		if err != nil {
 			return err
 		}
+		if len(followerIDs) == 0 {
+			return nil
+		}
 		pipe := w.cache.Pipeline()
+		if pipe == nil {
+			return errors.New("redis pipeline is nil")
+		}
 		for _, fid := range followerIDs {
-
-			inboxkey := fmt.Sprintf("feed:follower_inbox:%d", fid)
+			inboxkey := w.cache.Key("%s", rediscache.FollowerInboxKey(fid))
 			pipe.ZAdd(ctx, inboxkey, redis.Z{
 				Score:  float64(event.CreateTime),
 				Member: fmt.Sprintf("%d", event.VideoID),
 			})
-			if rand.Float64() < 0.01 { // 1% 概率裁剪
-				pipe.ZRemRangeByRank(ctx, inboxkey, 0, -501)
-			}
+			pipe.ZRemRangeByRank(ctx, inboxkey, 0, -501)
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			return err

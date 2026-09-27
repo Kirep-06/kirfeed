@@ -165,6 +165,17 @@ func run() error {
 	commentRepo := video.NewCommentRepository(sqlDB)
 	socialRepo := social.NewSocialRepository(sqlDB)
 
+	rmq := &mq.RabbitMQ{Conn: conn}
+	timelineMQ, err := mq.NewTimelineMQ(rmq)
+	if err != nil {
+		return err
+	}
+	fanoutMQ, err := mq.NewFanoutMQ(rmq)
+	if err != nil {
+		return err
+	}
+	defer fanoutMQ.Close()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -182,18 +193,11 @@ func run() error {
 		go runWorkerWithRetry(ctx, "PopularityWorker", conn, func(ch *amqp.Channel) error {
 			return worker.NewPopularityWorker(ch, cache, popularityQueue).Run(ctx)
 		})
+		go runWorkerWithRetry(ctx, "FanoutWorker", conn, func(ch *amqp.Channel) error {
+			return worker.NewFanoutWorker(ch, videoRepo, socialRepo, cache, "video.fanout.queue").Run(ctx)
+		})
 	}
 
-	rmq := &mq.RabbitMQ{Conn: conn}
-	timelineMQ, err := mq.NewTimelineMQ(rmq)
-	if err != nil {
-		return err
-	}
-	fanoutMQ, err := mq.NewFanoutMQ(rmq)
-	if err != nil {
-		return err
-	}
-	defer fanoutMQ.Close()
 	worker.StartOutboxPoller(sqlDB, timelineMQ, fanoutMQ)
 	worker.StartConsumer(timelineMQ, "video.timeline.update.queue", cache, rmq)
 	log.Println("Video timeline worker started")
