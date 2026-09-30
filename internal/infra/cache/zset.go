@@ -22,6 +22,13 @@ func (c *Client) ZAdd(ctx context.Context, key string, members ...redis.Z) error
 	return c.rdb.ZAdd(ctx, key, members...).Err()
 }
 
+func (c *Client) ZRem(ctx context.Context, key string, members ...interface{}) error {
+	if c == nil || c.rdb == nil {
+		return nil
+	}
+	return c.rdb.ZRem(ctx, key, members...).Err()
+}
+
 func (c *Client) ZRemRangeByRank(ctx context.Context, key string, start int64, stop int64) error {
 	if c == nil || c.rdb == nil {
 		return nil

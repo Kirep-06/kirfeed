@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"kirfeed/internal/config"
+	"kirfeed/internal/feed"
 	rediscache "kirfeed/internal/infra/cache"
 	"kirfeed/internal/infra/db"
 	"kirfeed/internal/infra/mq"
@@ -164,6 +165,7 @@ func run() error {
 	likeRepo := video.NewLikeRepository(sqlDB)
 	commentRepo := video.NewCommentRepository(sqlDB)
 	socialRepo := social.NewSocialRepository(sqlDB)
+	feedCache := feed.NewFeedCache(cache)
 
 	rmq := &mq.RabbitMQ{Conn: conn}
 	timelineMQ, err := mq.NewTimelineMQ(rmq)
@@ -187,14 +189,14 @@ func run() error {
 		return worker.NewCommentWorker(ch, commentRepo, videoRepo, commentQueue).Run(ctx)
 	})
 	go runWorkerWithRetry(ctx, "SocialWorker", conn, func(ch *amqp.Channel) error {
-		return worker.NewSocialWorker(ch, socialRepo, socialQueue).Run(ctx)
+		return worker.NewSocialWorker(ch, socialRepo, videoRepo, feedCache, socialQueue).Run(ctx)
 	})
 	if cache != nil {
 		go runWorkerWithRetry(ctx, "PopularityWorker", conn, func(ch *amqp.Channel) error {
 			return worker.NewPopularityWorker(ch, cache, popularityQueue).Run(ctx)
 		})
 		go runWorkerWithRetry(ctx, "FanoutWorker", conn, func(ch *amqp.Channel) error {
-			return worker.NewFanoutWorker(ch, videoRepo, socialRepo, cache, "video.fanout.queue").Run(ctx)
+			return worker.NewFanoutWorker(ch, videoRepo, socialRepo, feedCache, "video.fanout.queue").Run(ctx)
 		})
 	}
 

@@ -4,28 +4,28 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-
+	"kirfeed/internal/feed"
 	"kirfeed/internal/infra/mq"
 	"kirfeed/internal/social"
+	"kirfeed/internal/video"
 	"log"
 	"time"
 
-	"github.com/go-sql-driver/mysql"
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+const followBackfillLimit = 500
+
 type SocialWorker struct {
-	ch    *amqp.Channel
-	repo  *social.SocialRepository
-	queue string
+	ch        *amqp.Channel
+	repo      *social.SocialRepository
+	videos    *video.VideoRepository
+	feedCache *feed.FeedCache
+	queue     string
 }
 
-func NewSocialWorker(ch *amqp.Channel, repo *social.SocialRepository, queue string) *SocialWorker {
-	return &SocialWorker{
-		ch:    ch,
-		repo:  repo,
-		queue: queue,
-	}
+func NewSocialWorker(ch *amqp.Channel, repo *social.SocialRepository, videos *video.VideoRepository, feedCache *feed.FeedCache, queue string) *SocialWorker {
+	return &SocialWorker{ch: ch, repo: repo, videos: videos, feedCache: feedCache, queue: queue}
 }
 
 func (w *SocialWorker) Run(ctx context.Context) error {
@@ -35,20 +35,10 @@ func (w *SocialWorker) Run(ctx context.Context) error {
 	if w.queue == "" {
 		return errors.New("queue is required")
 	}
-
-	deliveries, err := w.ch.Consume(
-		w.queue,
-		"",
-		false,
-		false,
-		false,
-		false,
-		nil,
-	)
+	deliveries, err := w.ch.Consume(w.queue, "", false, false, false, false, nil)
 	if err != nil {
 		return err
 	}
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -73,8 +63,8 @@ func (w *SocialWorker) handleDelivery(ctx context.Context, d amqp.Delivery) {
 		}
 		if err := w.process(ctx, d.Body); err != nil {
 			if i >= maxRetries {
-				log.Printf("social worker: 重试 %d 次后仍失败, 丢弃: %v", maxRetries, err)
-				_ = d.Ack(false)
+				log.Printf("social worker: 重试 %d 次后仍失败, 发送到死信队列: %v", maxRetries, err)
+				_ = d.Nack(false, false)
 				return
 			}
 			wait := time.Duration(1<<uint(i)) * time.Second
@@ -87,36 +77,61 @@ func (w *SocialWorker) handleDelivery(ctx context.Context, d amqp.Delivery) {
 	}
 }
 
+// process handles feed-index side effects only. The relation itself has already
+// been committed by SocialService before its event is published.
 func (w *SocialWorker) process(ctx context.Context, body []byte) error {
-	var evt mq.SocialEvent
-	if err := json.Unmarshal(body, &evt); err != nil {
-		// 解析事件失败，直接丢弃
+	var event mq.SocialEvent
+	if err := json.Unmarshal(body, &event); err != nil {
 		return nil
 	}
-	if evt.FollowerID == 0 || evt.FolloweeID == 0 {
+	if event.FollowerID == 0 || event.FolloweeID == 0 || w.feedCache == nil || w.videos == nil {
 		return nil
+	}
+	relation := &social.Social{FollowerID: event.FollowerID, FolloweeID: event.FolloweeID}
+	isFollowed, err := w.repo.IsFollowed(ctx, relation)
+	if err != nil {
+		return err
 	}
 
-	switch evt.Action {
+	switch event.Action {
 	case "follow":
-		err := w.repo.Follow(ctx, &social.Social{
-			FollowerID: evt.FollowerID,
-			FolloweeID: evt.FolloweeID,
-		})
-		if err == nil {
+		if !isFollowed { // Ignore a stale event if the user has already unfollowed.
 			return nil
 		}
-		var mysqlErr *mysql.MySQLError
-		if errors.As(err, &mysqlErr) && mysqlErr.Number == 1062 {
+		followerCount, err := w.repo.CountFollowers(ctx, event.FolloweeID)
+		if err != nil {
+			return err
+		}
+		if followerCount >= FanoutThreshold {
 			return nil
 		}
-		return err
+		videos, err := w.videos.ListRecentByAuthorID(ctx, event.FolloweeID, followBackfillLimit)
+		if err != nil {
+			return err
+		}
+		return w.feedCache.FollowAuthor(ctx, event.FollowerID, event.FolloweeID, false, fanoutEvents(event.FolloweeID, videos))
 	case "unfollow":
-		return w.repo.Unfollow(ctx, &social.Social{
-			FollowerID: evt.FollowerID,
-			FolloweeID: evt.FolloweeID,
-		})
+		if isFollowed { // Ignore a stale event if the user has followed again.
+			return nil
+		}
+		videos, err := w.videos.ListRecentByAuthorID(ctx, event.FolloweeID, followBackfillLimit)
+		if err != nil {
+			return err
+		}
+		return w.feedCache.RemoveFollow(ctx, event.FollowerID, event.FolloweeID, fanoutEvents(event.FolloweeID, videos))
 	default:
 		return nil
 	}
+}
+
+func fanoutEvents(authorID uint, videos []video.Video) []mq.FanoutEvent {
+	events := make([]mq.FanoutEvent, 0, len(videos))
+	for _, item := range videos {
+		events = append(events, mq.FanoutEvent{
+			VideoID:    item.ID,
+			AuthorID:   authorID,
+			CreateTime: item.CreateTime.UnixMilli(),
+		})
+	}
+	return events
 }

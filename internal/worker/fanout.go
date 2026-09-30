@@ -4,8 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	rediscache "kirfeed/internal/infra/cache"
+	"kirfeed/internal/feed"
 	"kirfeed/internal/infra/mq"
 	"kirfeed/internal/social"
 	"kirfeed/internal/video"
@@ -13,25 +12,18 @@ import (
 	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
-	"github.com/redis/go-redis/v9"
 )
 
 type FanoutWorker struct {
 	ch     *amqp.Channel
 	videos *video.VideoRepository
 	social *social.SocialRepository
-	cache  *rediscache.Client
+	cache  *feed.FeedCache
 	queue  string
 }
 
-func NewFanoutWorker(ch *amqp.Channel, videos *video.VideoRepository, socialRepo *social.SocialRepository, cache *rediscache.Client, queue string) *FanoutWorker {
-	return &FanoutWorker{
-		ch:     ch,
-		videos: videos,
-		social: socialRepo,
-		cache:  cache,
-		queue:  queue,
-	}
+func NewFanoutWorker(ch *amqp.Channel, videos *video.VideoRepository, socialRepo *social.SocialRepository, cache *feed.FeedCache, queue string) *FanoutWorker {
+	return &FanoutWorker{ch: ch, videos: videos, social: socialRepo, cache: cache, queue: queue}
 }
 
 const FanoutThreshold = 1000
@@ -43,20 +35,10 @@ func (w *FanoutWorker) Run(ctx context.Context) error {
 	if w.queue == "" {
 		return errors.New("queue is required")
 	}
-
-	deliveries, err := w.ch.Consume(
-		w.queue,
-		"",
-		false,
-		false,
-		false,
-		false,
-		nil,
-	)
+	deliveries, err := w.ch.Consume(w.queue, "", false, false, false, false, nil)
 	if err != nil {
 		return err
 	}
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -96,21 +78,40 @@ func (w *FanoutWorker) handleDelivery(ctx context.Context, d amqp.Delivery) {
 }
 
 func (w *FanoutWorker) process(ctx context.Context, body []byte) error {
-	var evt mq.FanoutEvent
-	if err := json.Unmarshal(body, &evt); err != nil {
+	var event mq.FanoutEvent
+	if err := json.Unmarshal(body, &event); err != nil {
 		return nil
 	}
-	if evt.AuthorID == 0 || evt.VideoID == 0 {
+	if event.AuthorID == 0 || event.VideoID == 0 {
 		return nil
 	}
-
-	followerCount, err := w.social.CountFollowers(ctx, evt.AuthorID)
+	followerCount, err := w.social.CountFollowers(ctx, event.AuthorID)
 	if err != nil {
 		return err
 	}
 	if followerCount >= FanoutThreshold {
-		return w.addAuthorOutbox(ctx, evt)
+		return w.cache.AddAuthorOutboxItem(ctx, event)
 	}
-	return w.addFollowerInbox(ctx, evt)
+	return w.addFollowerInbox(ctx, event)
 }
 
+func (w *FanoutWorker) addFollowerInbox(ctx context.Context, event mq.FanoutEvent) error {
+	const batchSize = 100
+	var cursor uint
+	for {
+		followerIDs, nextCursor, hasMore, err := w.social.ListFollowerIDs(ctx, event.AuthorID, batchSize, cursor)
+		if err != nil {
+			return err
+		}
+		if len(followerIDs) == 0 {
+			return nil
+		}
+		if err := w.cache.AddFollowerInboxItems(ctx, event, followerIDs); err != nil {
+			return err
+		}
+		if !hasMore {
+			return nil
+		}
+		cursor = nextCursor
+	}
+}
