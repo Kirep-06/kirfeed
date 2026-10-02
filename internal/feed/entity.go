@@ -30,6 +30,17 @@ type ListLatestResponse struct {
 	HasMore   bool            `json:"has_more"`
 }
 
+type ListFollowingRequest struct {
+	Limit  int    `json:"limit"`
+	Cursor string `json:"cursor"`
+}
+
+type ListFollowingResponse struct {
+	VideoList  []FeedVideoItem `json:"video_list"`
+	NextCursor string          `json:"next_cursor"`
+	HasMore    bool            `json:"has_more"`
+}
+
 type ListByPopularityRequest struct {
 	Limit          int   `json:"limit"`
 	AsOf           int64 `json:"as_of"`  // 服务器返回的分钟时间戳；第一页传0

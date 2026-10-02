@@ -121,9 +121,9 @@ func SetRouter(db *gorm.DB, cache *rediscache.Client, rmq *mq.RabbitMQ) *gin.Eng
 	feedService := feed.NewFeedService(feedRepository, likeRepository, cache)
 	feedHandler := feed.NewFeedHandler(feedService)
 	feedGroup := r.Group("/feed")
-	feedGroup.Use(jwt.SoftJWTAuth(accountRepository, cache))
-	feedGroup.POST("/latest", feedHandler.ListLatest)
-	feedGroup.POST("/listByPopularity", feedHandler.ListByPopularity)
+	feedGroup.POST("/latest", jwt.SoftJWTAuth(accountRepository, cache), feedHandler.ListLatest)
+	feedGroup.POST("/listByPopularity", jwt.SoftJWTAuth(accountRepository, cache), feedHandler.ListByPopularity)
+	feedGroup.POST("/following", jwt.JWTAuth(accountRepository, cache), feedHandler.ListFollowing)
 
 	return r
 }

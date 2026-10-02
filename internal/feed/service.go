@@ -2,12 +2,16 @@ package feed
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	rediscache "kirfeed/internal/infra/cache"
 	"kirfeed/internal/video"
 	"log"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -351,7 +355,7 @@ func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf i
 		dest := f.rediscache.Key("hot:video:merge:1m:%s", asOf.Format("200601021504"))
 		opCtx, cancel := context.WithTimeout(ctx, 80*time.Millisecond)
 		defer cancel()
-		
+
 		exists, err := f.rediscache.Exists(opCtx, dest)
 		if err == nil && !exists {
 			err = f.rediscache.ZUnionStore(opCtx, dest, keys, "SUM")
@@ -427,4 +431,261 @@ func buildOrderedResult(orderedIDs []uint, dataMap map[uint]*video.Video) []*vid
 		}
 	}
 	return res
+}
+
+const BigCreatorFollowerThreshold = 1000
+
+var ErrInvalidFollowingCursor = errors.New("invalid following cursor")
+
+type followingCursor struct {
+	CreateTime time.Time `json:"create_time"`
+	VideoID    uint      `json:"video_id"`
+}
+
+type followingAuthor struct {
+	AuthorID      uint  `gorm:"column:author_id"`
+	FollowerCount int64 `gorm:"column:follower_count"`
+}
+
+type followingCandidate struct {
+	videoID    uint
+	authorID   uint
+	createTime time.Time
+}
+
+// ListFollowing merges pushed inbox items and followed big creators' outboxes.
+func (f *FeedService) ListFollowing(ctx context.Context, viewerID uint, limit int, rawCursor string) (ListFollowingResponse, error) {
+	if viewerID == 0 {
+		return ListFollowingResponse{}, errors.New("login required")
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	cursor, err := parseFollowingCursor(rawCursor)
+	if err != nil {
+		return ListFollowingResponse{}, err
+	}
+	authors, err := f.repo.ListFollowingAuthors(ctx, viewerID)
+	if err != nil {
+		return ListFollowingResponse{}, err
+	}
+	if len(authors) == 0 {
+		return ListFollowingResponse{VideoList: []FeedVideoItem{}}, nil
+	}
+	followed := make(map[uint]struct{}, len(authors))
+	bigCreators := make([]uint, 0)
+	for _, author := range authors {
+		followed[author.AuthorID] = struct{}{}
+		if author.FollowerCount >= BigCreatorFollowerThreshold {
+			bigCreators = append(bigCreators, author.AuthorID)
+		}
+	}
+
+	candidates := f.listFollowingRedis(ctx, viewerID, bigCreators, followed, cursor)
+	seen := make(map[uint]struct{}, len(candidates))
+	for _, item := range candidates {
+		seen[item.videoID] = struct{}{}
+	}
+	if len(candidates) < limit+1 {
+		dbCursor := cursor
+		for len(candidates) < limit+1 {
+			page, err := f.repo.ListFollowingVideos(ctx, viewerID, dbCursor, limit+1)
+			if err != nil {
+				return ListFollowingResponse{}, err
+			}
+			for _, item := range page {
+				if _, exists := seen[item.ID]; exists {
+					continue
+				}
+				seen[item.ID] = struct{}{}
+				candidates = append(candidates, followingCandidate{videoID: item.ID, authorID: item.AuthorID, createTime: item.CreateTime})
+			}
+			if len(page) < limit+1 {
+				break
+			}
+			last := page[len(page)-1]
+			dbCursor = &followingCursor{CreateTime: last.CreateTime, VideoID: last.ID}
+		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].createTime.UnixMilli() == candidates[j].createTime.UnixMilli() {
+			return candidates[i].videoID > candidates[j].videoID
+		}
+		return candidates[i].createTime.UnixMilli() > candidates[j].createTime.UnixMilli()
+	})
+	if len(candidates) > limit+1 {
+		candidates = candidates[:limit+1]
+	}
+	ids := make([]uint, 0, len(candidates))
+	for _, item := range candidates {
+		ids = append(ids, item.videoID)
+	}
+	var videos []*video.Video
+	if f.rediscache == nil {
+		videos, err = f.repo.GetByIDs(ctx, ids)
+		if err == nil {
+			byID := make(map[uint]*video.Video, len(videos))
+			for _, item := range videos {
+				byID[item.ID] = item
+			}
+			ordered := make([]*video.Video, 0, len(ids))
+			for _, id := range ids {
+				if item := byID[id]; item != nil {
+					ordered = append(ordered, item)
+				}
+			}
+			videos = ordered
+		}
+	} else {
+		videos, err = f.GetVideoByIDs(ctx, ids)
+	}
+	if err != nil {
+		return ListFollowingResponse{}, err
+	}
+	valid := make([]*video.Video, 0, len(videos))
+	for _, item := range videos {
+		if item == nil {
+			continue
+		}
+		if _, ok := followed[item.AuthorID]; ok && beforeFollowingCursor(item.CreateTime, item.ID, cursor) {
+			valid = append(valid, item)
+		}
+	}
+	if len(valid) < limit+1 {
+		validIDs := make(map[uint]struct{}, len(valid))
+		for _, item := range valid {
+			validIDs[item.ID] = struct{}{}
+		}
+		dbCursor := cursor
+		for len(valid) < limit+1 {
+			page, err := f.repo.ListFollowingVideos(ctx, viewerID, dbCursor, limit+1)
+			if err != nil {
+				return ListFollowingResponse{}, err
+			}
+			for _, item := range page {
+				if _, exists := validIDs[item.ID]; !exists {
+					validIDs[item.ID] = struct{}{}
+					valid = append(valid, item)
+				}
+			}
+			if len(page) < limit+1 {
+				break
+			}
+			last := page[len(page)-1]
+			dbCursor = &followingCursor{CreateTime: last.CreateTime, VideoID: last.ID}
+		}
+	}
+	sort.Slice(valid, func(i, j int) bool {
+		if valid[i].CreateTime.UnixMilli() == valid[j].CreateTime.UnixMilli() {
+			return valid[i].ID > valid[j].ID
+		}
+		return valid[i].CreateTime.UnixMilli() > valid[j].CreateTime.UnixMilli()
+	})
+	if len(valid) > limit+1 {
+		valid = valid[:limit+1]
+	}
+	hasMore := len(valid) > limit
+	if hasMore {
+		valid = valid[:limit]
+	}
+	items, err := f.buildFeedVideos(ctx, valid, viewerID)
+	if err != nil {
+		return ListFollowingResponse{}, err
+	}
+	nextCursor := ""
+	if len(valid) > 0 {
+		last := valid[len(valid)-1]
+		nextCursor = encodeFollowingCursor(&followingCursor{CreateTime: last.CreateTime, VideoID: last.ID})
+	}
+	return ListFollowingResponse{VideoList: items, NextCursor: nextCursor, HasMore: hasMore}, nil
+}
+
+func (f *FeedService) listFollowingRedis(ctx context.Context, viewerID uint, bigCreators []uint, followed map[uint]struct{}, cursor *followingCursor) []followingCandidate {
+	if f.rediscache == nil {
+		return nil
+	}
+	keys := []string{f.rediscache.Key("%s", rediscache.FollowerInboxKey(viewerID))}
+	for _, authorID := range bigCreators {
+		keys = append(keys, f.rediscache.Key("%s", rediscache.AuthorOutboxKey(authorID)))
+	}
+	pipe := f.rediscache.Pipeline()
+	if pipe == nil {
+		return nil
+	}
+	commands := make([]*redis.ZSliceCmd, 0, len(keys))
+	for _, key := range keys {
+		commands = append(commands, pipe.ZRevRangeWithScores(ctx, key, 0, 499))
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return nil // MySQL is the fallback when Redis is unavailable.
+	}
+	seen := make(map[uint]struct{})
+	items := make([]followingCandidate, 0)
+	for source, command := range commands {
+		values, err := command.Result()
+		if err != nil {
+			return nil
+		}
+		for _, value := range values {
+			member, ok := value.Member.(string)
+			if !ok {
+				continue
+			}
+			authorID, videoID, ok := parseFeedVideoMember(member)
+			if !ok {
+				continue
+			}
+			if _, ok := followed[authorID]; !ok || (source > 0 && authorID != bigCreators[source-1]) {
+				continue
+			}
+			created := time.UnixMilli(int64(value.Score))
+			if !beforeFollowingCursor(created, videoID, cursor) {
+				continue
+			}
+			if _, duplicate := seen[videoID]; duplicate {
+				continue
+			}
+			seen[videoID] = struct{}{}
+			items = append(items, followingCandidate{videoID: videoID, authorID: authorID, createTime: created})
+		}
+	}
+	return items
+}
+
+func parseFeedVideoMember(member string) (uint, uint, bool) {
+	parts := strings.SplitN(member, ":", 2)
+	if len(parts) != 2 {
+		return 0, 0, false
+	}
+	authorID, err1 := strconv.ParseUint(parts[0], 10, 64)
+	videoID, err2 := strconv.ParseUint(parts[1], 10, 64)
+	return uint(authorID), uint(videoID), err1 == nil && err2 == nil && authorID > 0 && videoID > 0
+}
+
+func beforeFollowingCursor(created time.Time, videoID uint, cursor *followingCursor) bool {
+	return cursor == nil || created.UnixMilli() < cursor.CreateTime.UnixMilli() ||
+		(created.UnixMilli() == cursor.CreateTime.UnixMilli() && videoID < cursor.VideoID)
+}
+
+func parseFollowingCursor(raw string) (*followingCursor, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	content, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, ErrInvalidFollowingCursor
+	}
+	var cursor followingCursor
+	if err := json.Unmarshal(content, &cursor); err != nil || cursor.CreateTime.IsZero() || cursor.VideoID == 0 {
+		return nil, ErrInvalidFollowingCursor
+	}
+	return &cursor, nil
+}
+
+func encodeFollowingCursor(cursor *followingCursor) string {
+	content, err := json.Marshal(cursor)
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(content)
 }

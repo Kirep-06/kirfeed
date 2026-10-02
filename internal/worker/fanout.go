@@ -26,7 +26,7 @@ func NewFanoutWorker(ch *amqp.Channel, videos *video.VideoRepository, socialRepo
 	return &FanoutWorker{ch: ch, videos: videos, social: socialRepo, cache: cache, queue: queue}
 }
 
-const FanoutThreshold = 1000
+const FanoutThreshold = feed.BigCreatorFollowerThreshold
 
 func (w *FanoutWorker) Run(ctx context.Context) error {
 	if w == nil || w.ch == nil || w.videos == nil || w.social == nil || w.cache == nil {

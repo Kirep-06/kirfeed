@@ -50,6 +50,26 @@ func nonNilFeedVideoItems(items []FeedVideoItem) []FeedVideoItem {
 	return items
 }
 
+func (f *FeedHandler) ListFollowing(c *gin.Context) {
+	var req ListFollowingRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	viewerID, err := jwt.GetAccountID(c)
+	if err != nil || viewerID == 0 {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "login required"})
+		return
+	}
+	resp, err := f.service.ListFollowing(c.Request.Context(), viewerID, req.Limit, req.Cursor)
+	if err != nil {
+		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
+		return
+	}
+	resp.VideoList = nonNilFeedVideoItems(resp.VideoList)
+	c.JSON(http.StatusOK, resp)
+}
+
 func (f *FeedHandler) ListByPopularity(c *gin.Context) {
 	var req ListByPopularityRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
