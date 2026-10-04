@@ -12,11 +12,11 @@ func UpdatePopularityCache(ctx context.Context, cache *rediscache.Client, id uin
 		return
 	}
 
-	_ = cache.Del(context.Background(), cache.Key("video:detail:id=%d", id))
-	_ = cache.Del(context.Background(), cache.Key("video:entity:%d", id))
+	_ = cache.Del(context.Background(), cache.VideoDetailKey(id))
+	_ = cache.Del(context.Background(), cache.VideoEntityKey(id))
 
 	now := time.Now().UTC().Truncate(time.Minute)
-	windowKey := cache.Key("hot:video:1m:%s", now.Format("200601021504"))
+	windowKey := cache.HotVideoMinuteKey(now)
 	member := strconv.FormatUint(uint64(id), 10)
 
 	opCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)

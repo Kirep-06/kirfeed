@@ -49,7 +49,7 @@ func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*vi
 	//L1:本地缓存
 	var missedL1 []uint
 	for _, id := range videoIDs {
-		cacheKey := f.rediscache.Key("video:entity:%d", id)
+		cacheKey := f.rediscache.VideoEntityKey(id)
 		if f.localcache != nil {
 			if v, found := f.localcache.Get(cacheKey); found {
 				if data, ok := v.(video.Video); ok {
@@ -71,7 +71,7 @@ func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*vi
 	if len(missedL1) > 0 {
 		cacheKeys := make([]string, len(missedL1))
 		for i, id := range missedL1 {
-			cacheKeys[i] = f.rediscache.Key("video:entity:%d", id)
+			cacheKeys[i] = f.rediscache.VideoEntityKey(id)
 		}
 
 		cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
@@ -114,7 +114,7 @@ func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*vi
 		wg.Add(1)
 		go func(videoID uint) {
 			defer wg.Done()
-			sfKey := f.rediscache.Key("sf:entity:%d", videoID)
+			sfKey := f.rediscache.VideoEntitySingleflightKey(videoID)
 
 			v, err, _ := f.requestGroup.Do(sfKey, func() (interface{}, error) {
 				videoList, err := f.repo.GetByIDs(ctx, []uint{videoID})
@@ -124,7 +124,7 @@ func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*vi
 				}
 
 				safeCopy := *videoList[0]
-				cachekey := f.rediscache.Key("video:entity:%d", safeCopy.ID)
+				cachekey := f.rediscache.VideoEntityKey(safeCopy.ID)
 				if b, err := json.Marshal(safeCopy); err == nil {
 					//异步回写redis
 					go func(k string, b []byte) {
@@ -142,7 +142,7 @@ func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*vi
 				mu.Lock()
 				videoMap[id] = &safeCopy
 				mu.Unlock()
-				f.localcache.Set(f.rediscache.Key("video:entity:%d", safeCopy.ID), safeCopy, 5*time.Second)
+				f.localcache.Set(f.rediscache.VideoEntityKey(safeCopy.ID), safeCopy, 5*time.Second)
 			}
 		}(id)
 	}
@@ -157,7 +157,7 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore ti
 	}
 
 	// 获取 ZSET 中最老的一条数据
-	zsetTail, err := f.rediscache.ZRangeWithScores(ctx, f.rediscache.Key("feed:global_timeline"), 0, 0)
+	zsetTail, err := f.rediscache.ZRangeWithScores(ctx, f.rediscache.GlobalTimelineKey(), 0, 0)
 
 	if err != nil {
 		return f.listLatestFromDB(ctx, limit, latestBefore, viewerAccountID)
@@ -167,7 +167,7 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore ti
 
 	if isZsetEmpty {
 		//全局静态锁：无视所有用户的不同时间戳游标
-		sfKey := f.rediscache.Key("sf:fallback:global_timeline_rebuild")
+		sfKey := f.rediscache.GlobalTimelineRebuildSingleflightKey()
 
 		v, err, _ := f.requestGroup.Do(sfKey, func() (interface{}, error) {
 			// 无视游标，直接去 MySQL 捞最新的 1000 条
@@ -189,7 +189,7 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore ti
 					Member: fmt.Sprintf("%d", vid.ID),
 				})
 			}
-			f.rediscache.ZAdd(bgCtx, f.rediscache.Key("feed:global_timeline"), zElements...)
+			f.rediscache.ZAdd(bgCtx, f.rediscache.GlobalTimelineKey(), zElements...)
 			return "SUCCESS", nil
 		})
 
@@ -216,7 +216,7 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore ti
 		//冷数据降级查库
 
 		// 针对个别用户的防并发（此时可以用时间戳做锁，因为冷尾流量极小）
-		sfKey := f.rediscache.Key("sf:cold:listLatest:%d:%d", limit, reqTime)
+		sfKey := f.rediscache.ColdLatestSingleflightKey(limit, reqTime)
 		v, err, _ := f.requestGroup.Do(sfKey, func() (interface{}, error) {
 			return f.repo.ListLatest(ctx, limit, latestBefore)
 		})
@@ -233,7 +233,7 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore ti
 			maxScore = fmt.Sprintf("%d", reqTime-1) // 防重复
 		}
 
-		videoIDsStr, err := f.rediscache.ZRevRangeByScore(ctx, f.rediscache.Key("feed:global_timeline"), maxScore, "-inf", 0, int64(limit))
+		videoIDsStr, err := f.rediscache.ZRevRangeByScore(ctx, f.rediscache.GlobalTimelineKey(), maxScore, "-inf", 0, int64(limit))
 		if err != nil {
 			return ListLatestResponse{}, err
 		}
@@ -263,7 +263,7 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore ti
 				coldCursor = latestBefore
 			}
 
-			sfKey := f.rediscache.Key("sf:stitch:listLatest:%d:%d", remainLimit, coldCursor.UnixMilli())
+			sfKey := f.rediscache.StitchedLatestSingleflightKey(remainLimit, coldCursor.UnixMilli())
 			v, err, _ := f.requestGroup.Do(sfKey, func() (interface{}, error) {
 				return f.repo.ListLatest(ctx, remainLimit, coldCursor)
 			})
@@ -350,9 +350,9 @@ func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf i
 		}
 		keys := make([]string, 60)
 		for i := range keys {
-			keys[i] = f.rediscache.Key("hot:video:1m:%s", asOf.Add(-time.Duration(i)*time.Minute).Format("200601021504"))
+			keys[i] = f.rediscache.HotVideoMinuteKey(asOf.Add(-time.Duration(i) * time.Minute))
 		}
-		dest := f.rediscache.Key("hot:video:merge:1m:%s", asOf.Format("200601021504"))
+		dest := f.rediscache.MergedHotVideoMinuteKey(asOf)
 		opCtx, cancel := context.WithTimeout(ctx, 80*time.Millisecond)
 		defer cancel()
 
@@ -604,9 +604,9 @@ func (f *FeedService) listFollowingRedis(ctx context.Context, viewerID uint, big
 	if f.rediscache == nil {
 		return nil
 	}
-	keys := []string{f.rediscache.Key("%s", rediscache.FollowerInboxKey(viewerID))}
+	keys := []string{f.rediscache.FollowerInboxKey(viewerID)}
 	for _, authorID := range bigCreators {
-		keys = append(keys, f.rediscache.Key("%s", rediscache.AuthorOutboxKey(authorID)))
+		keys = append(keys, f.rediscache.AuthorOutboxKey(authorID))
 	}
 	pipe := f.rediscache.Pipeline()
 	if pipe == nil {

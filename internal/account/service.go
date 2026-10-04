@@ -85,15 +85,15 @@ func (as *AccountService) Login(ctx context.Context, username, password string) 
 		defer cancel()
 
 		// id,accesstoken 24h
-		if err := as.cache.SetBytes(cacheCtx, as.cache.Key("account:%d", account.ID), []byte(accessToken), 24*time.Hour); err != nil {
+		if err := as.cache.SetBytes(cacheCtx, as.cache.AccountAccessTokenKey(account.ID), []byte(accessToken), 24*time.Hour); err != nil {
 			log.Printf("failed to set cache: %v", err)
 		}
 		// id,refreshtoken 7day
-		if err := as.cache.SetBytes(cacheCtx, as.cache.Key("account:%d:refresh", account.ID), []byte(refreshToken), 7*24*time.Hour); err != nil {
+		if err := as.cache.SetBytes(cacheCtx, as.cache.AccountRefreshTokenKey(account.ID), []byte(refreshToken), 7*24*time.Hour); err != nil {
 			log.Printf("failed to set refresh cache: %v", err)
 		}
 		// refreshtoken,id 7day
-		if err := as.cache.SetBytes(cacheCtx, as.cache.Key("refresh:%s", refreshToken), []byte(strconv.FormatUint(uint64(account.ID), 10)), 7*24*time.Hour); err != nil {
+		if err := as.cache.SetBytes(cacheCtx, as.cache.RefreshTokenAccountKey(refreshToken), []byte(strconv.FormatUint(uint64(account.ID), 10)), 7*24*time.Hour); err != nil {
 			log.Printf("failed to set refresh lookup: %v", err)
 		}
 	}
@@ -112,14 +112,14 @@ func (as *AccountService) Logout(ctx context.Context, accountID uint) error {
 		cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 		defer cancel()
 
-		if err := as.cache.Del(cacheCtx, as.cache.Key("account:%d", account.ID)); err != nil {
+		if err := as.cache.Del(cacheCtx, as.cache.AccountAccessTokenKey(account.ID)); err != nil {
 			log.Printf("failed to del cache: %v", err)
 		}
-		if err := as.cache.Del(cacheCtx, as.cache.Key("account:%d:refresh", account.ID)); err != nil {
+		if err := as.cache.Del(cacheCtx, as.cache.AccountRefreshTokenKey(account.ID)); err != nil {
 			log.Printf("failed to del refresh cache: %v", err)
 		}
 		if account.RefreshToken != "" {
-			if err := as.cache.Del(cacheCtx, as.cache.Key("refresh:%s", account.RefreshToken)); err != nil {
+			if err := as.cache.Del(cacheCtx, as.cache.RefreshTokenAccountKey(account.RefreshToken)); err != nil {
 				log.Printf("failed to del refresh lookup: %v", err)
 			}
 		}
@@ -134,7 +134,7 @@ func (as *AccountService) RefreshAccessToken(ctx context.Context, refreshToken s
 	if as.cache != nil {
 		cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 		defer cancel()
-		b, err := as.cache.GetBytes(cacheCtx, as.cache.Key("refresh:%s", refreshToken))
+		b, err := as.cache.GetBytes(cacheCtx, as.cache.RefreshTokenAccountKey(refreshToken))
 		if err == nil {
 			idStr := string(b)
 			id, parseErr := strconv.ParseUint(idStr, 10, 64)
@@ -148,7 +148,7 @@ func (as *AccountService) RefreshAccessToken(ctx context.Context, refreshToken s
 					if err := as.accountRepository.UpdateToken(ctx, account.ID, newToken); err != nil {
 						return "", 0, "", err
 					}
-					if err := as.cache.SetBytes(cacheCtx, as.cache.Key("account:%d", account.ID), []byte(newToken), 24*time.Hour); err != nil {
+					if err := as.cache.SetBytes(cacheCtx, as.cache.AccountAccessTokenKey(account.ID), []byte(newToken), 24*time.Hour); err != nil {
 						log.Printf("failed to set cache: %v", err)
 					}
 					return newToken, account.ID, account.Username, nil
@@ -217,7 +217,7 @@ func (as *AccountService) Rename(ctx context.Context, accountID uint, newUsernam
 		cacheCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
 		defer cancel()
 
-		if err := as.cache.SetBytes(cacheCtx, as.cache.Key("account:%d", accountID), []byte(token), 24*time.Hour); err != nil {
+		if err := as.cache.SetBytes(cacheCtx, as.cache.AccountAccessTokenKey(accountID), []byte(token), 24*time.Hour); err != nil {
 			log.Printf("failed to set cache: %v", err)
 		}
 	}

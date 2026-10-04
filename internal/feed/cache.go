@@ -36,7 +36,7 @@ func (c *FeedCache) AddAuthorOutboxItem(ctx context.Context, event mq.FanoutEven
 	if pipe == nil {
 		return errors.New("redis pipeline is nil")
 	}
-	outboxKey := c.cache.Key("%s", rediscache.AuthorOutboxKey(event.AuthorID))
+	outboxKey := c.cache.AuthorOutboxKey(event.AuthorID)
 	pipe.ZAdd(ctx, outboxKey, redis.Z{
 		Score:  float64(event.CreateTime),
 		Member: feedVideoMember(event.AuthorID, event.VideoID),
@@ -72,7 +72,7 @@ func (c *FeedCache) AddFollowerInboxItems(ctx context.Context, event mq.FanoutEv
 		if followerID == 0 {
 			continue
 		}
-		inboxKey := c.cache.Key("%s", rediscache.FollowerInboxKey(followerID))
+		inboxKey := c.cache.FollowerInboxKey(followerID)
 		pipe.ZAdd(ctx, inboxKey, redis.Z{
 			Score:  float64(event.CreateTime),
 			Member: member,
@@ -116,7 +116,7 @@ func (c *FeedCache) RemoveFollow(ctx context.Context, followerID, authorID uint,
 	if pipe == nil {
 		return errors.New("redis pipeline is nil")
 	}
-	inboxKey := c.cache.Key("%s", rediscache.FollowerInboxKey(followerID))
+	inboxKey := c.cache.FollowerInboxKey(followerID)
 	for _, event := range videos {
 		if event.AuthorID == authorID && event.VideoID != 0 {
 			// Remove the new author:video member format and legacy bare video IDs.
@@ -139,7 +139,7 @@ func (c *FeedCache) BackfillInbox(ctx context.Context, followerID, authorID uint
 	if pipe == nil {
 		return errors.New("redis pipeline is nil")
 	}
-	inboxKey := c.cache.Key("%s", rediscache.FollowerInboxKey(followerID))
+	inboxKey := c.cache.FollowerInboxKey(followerID)
 	for _, event := range videos {
 		if event.AuthorID == authorID && event.VideoID != 0 {
 			pipe.ZAdd(ctx, inboxKey, redis.Z{

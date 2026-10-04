@@ -81,14 +81,14 @@ func (vs *VideoService) Delete(ctx context.Context, id uint, authorID uint) erro
 		return err
 	}
 	if vs.cache != nil {
-		cacheKey := vs.cache.Key("video:detail:id=%d", id)
+		cacheKey := vs.cache.VideoDetailKey(id)
 		_ = vs.cache.Del(context.Background(), cacheKey)
 	}
 	return nil
 }
 
 func (vs *VideoService) GetDetail(ctx context.Context, id uint) (*Video, error) {
-	cacheKey := vs.cache.Key("video:detail:id=%d", id)
+	cacheKey := vs.cache.VideoDetailKey(id)
 
 	getCached := func() (*Video, bool) {
 		opCtx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
@@ -129,7 +129,7 @@ func (vs *VideoService) GetDetail(ctx context.Context, id uint) (*Video, error) 
 				return &cached, nil
 			}
 		} else if rediscache.IsMiss(err) {
-			lockKey := "lock:" + cacheKey
+			lockKey := vs.cache.LockKey(cacheKey)
 
 			lockCtx, lockCancel := context.WithTimeout(ctx, 50*time.Millisecond)
 			token, locked, lockErr := vs.cache.Lock(lockCtx, lockKey, 2*time.Second)

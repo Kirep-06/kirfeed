@@ -43,7 +43,7 @@ func JWTAuth(accountRepo *account.AccountRepository, cache *rediscache.Client) g
 func check(c *gin.Context, claims *auth.Claims, tokenString string, accountRepo *account.AccountRepository, cache *rediscache.Client) {
 	// 先查 Redis
 	if cache != nil {
-		key := cache.Key("account:%d", claims.AccountID)
+		key := cache.AccountAccessTokenKey(claims.AccountID)
 		cacheCtx, cancel := context.WithTimeout(c.Request.Context(), 50*time.Millisecond)
 		defer cancel()
 
@@ -68,7 +68,7 @@ func check(c *gin.Context, claims *auth.Claims, tokenString string, accountRepo 
 	}
 
 	if cache != nil {
-		key := cache.Key("account:%d", claims.AccountID)
+		key := cache.AccountAccessTokenKey(claims.AccountID)
 		cacheCtx, cancel := context.WithTimeout(c.Request.Context(), 50*time.Millisecond)
 		defer cancel()
 

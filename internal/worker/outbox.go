@@ -90,7 +90,7 @@ func StartConsumer(tmq *mq.TimelineMQ, queueName string, redisClient *rediscache
 				}
 
 				ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-				timelineKey := redisClient.Key("feed:global_timeline")
+				timelineKey := redisClient.GlobalTimelineKey()
 				err = redisClient.ZAdd(ctx, timelineKey, redisv9.Z{
 					Score:  float64(event.CreateTime),
 					Member: fmt.Sprintf("%d", event.VideoID),
