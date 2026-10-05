@@ -61,3 +61,8 @@ type ListByPopularityResponse struct {
 	NextLatestBefore     *time.Time      `json:"next_latest_before,omitempty"`
 	NextLatestIDBefore   *uint           `json:"next_latest_id_before,omitempty"`
 }
+
+type TimelineCurosr struct {
+	CreateTime time.Time
+	VideoID    uint
+}

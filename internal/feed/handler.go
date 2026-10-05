@@ -17,6 +17,8 @@ func NewFeedHandler(service *FeedService) *FeedHandler {
 	return &FeedHandler{service: service}
 }
 
+const DefaultLimit = 20
+
 func (f *FeedHandler) ListLatest(c *gin.Context) {
 	var req ListLatestRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -24,7 +26,7 @@ func (f *FeedHandler) ListLatest(c *gin.Context) {
 		return
 	}
 	if req.Limit <= 0 || req.Limit > 50 {
-		req.Limit = 10
+		req.Limit = DefaultLimit
 	}
 	var latestTime time.Time
 	if req.LatestTime > 0 {

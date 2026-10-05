@@ -41,28 +41,36 @@ func (repo *FeedRepository) GetByIDs(ctx context.Context, ids []uint) ([]*video.
 	return videos, nil
 }
 
-// ListFollowingAuthors returns current followees and their current follower counts.
-func (repo *FeedRepository) ListFollowingAuthors(ctx context.Context, followerID uint) ([]followingAuthor, error) {
-	var authors []followingAuthor
-	err := repo.db.WithContext(ctx).Table("socials AS s").
-		Select("s.vlogger_id AS author_id, (SELECT COUNT(*) FROM socials AS f WHERE f.vlogger_id = s.vlogger_id) AS follower_count").
-		Where("s.follower_id = ?", followerID).
-		Scan(&authors).Error
-	return authors, err
+func (repo *FeedRepository) ListFollowingAuthorIDs(ctx context.Context, followerID uint) ([]uint, error) {
+	var ids []uint
+	err := repo.db.WithContext(ctx).Table("socials").Where("follower_id = ?", followerID).Pluck("followee_id", &ids).Error
+	return ids, err
 }
 
-// ListFollowingVideos is the source of truth for a cold or incomplete Redis page.
-func (repo *FeedRepository) ListFollowingVideos(ctx context.Context, followerID uint, cursor *followingCursor, limit int) ([]*video.Video, error) {
+func (repo *FeedRepository) ListBigFollowingAuthorIDs(ctx context.Context, followerID uint) ([]uint, error) {
+	var ids []uint
+	err := repo.db.WithContext(ctx).Table("socials AS s").
+		Joins("JOIN (SELECT followee_id FROM socials GROUP BY followee_id HAVING COUNT(*) >= ?) AS big ON big.followee_id = s.followee_id", BigCreatorFollowerThreshold).
+		Where("s.follower_id = ?", followerID).Pluck("s.followee_id", &ids).Error
+	return ids, err
+}
+
+func (repo *FeedRepository) ListFollowingVideos(ctx context.Context, followerID uint, cursor *TimelineCurosr, limit int) ([]*video.Video, error) {
 	var videos []*video.Video
-	const timeScore = "FLOOR(UNIX_TIMESTAMP(v.create_time) * 1000)"
-	query := repo.db.WithContext(ctx).Table("videos AS v").
+	query := repo.db.WithContext(ctx).
+		Table("videos AS v").
 		Select("v.*").
-		Joins("JOIN socials AS s ON s.vlogger_id = v.author_id").
-		Where("s.follower_id = ?", followerID)
+		Joins("JOIN socials AS f ON f.followee_id = v.author_id").
+		Where("f.follower_id = ?", followerID)
+
 	if cursor != nil {
-		query = query.Where("("+timeScore+" < ? OR ("+timeScore+" = ? AND v.id < ?))", cursor.CreateTime.UnixMilli(), cursor.CreateTime.UnixMilli(), cursor.VideoID)
+		query = query.Where(
+			"v.create_time < ? OR (v.create_time = ? AND v.id < ?)",
+			cursor.CreateTime, cursor.CreateTime, cursor.VideoID,
+		)
 	}
-	err := query.Order(timeScore + " DESC, v.id DESC").Limit(limit).Scan(&videos).Error
+
+	err := query.Order("v.create_time DESC, v.id DESC").Limit(limit).Scan(&videos).Error
 	return videos, err
 }
 
@@ -70,7 +78,10 @@ func (repo *FeedRepository) ListByPopularity(ctx context.Context, limit int, pop
 	var videos []*video.Video
 	query := repo.db.WithContext(ctx).Model(&video.Video{}).Order("popularity DESC, create_time DESC, id DESC")
 	if !timeBefore.IsZero() && idBefore > 0 {
-		query = query.Where("(popularity < ?) OR (popularity = ? AND create_time < ?) OR (popularity = ? AND create_time = ? AND id < ?)", popularityBefore, popularityBefore, timeBefore, popularityBefore, timeBefore, idBefore)
+		query = query.Where(
+			"(popularity < ?) OR (popularity = ? AND create_time < ?) OR (popularity = ? AND create_time = ? AND id < ?)",
+			popularityBefore, popularityBefore, timeBefore, popularityBefore, timeBefore, idBefore,
+		)
 	}
 	if err := query.Limit(limit).Find(&videos).Error; err != nil {
 		return nil, err

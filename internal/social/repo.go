@@ -21,12 +21,12 @@ func (r *SocialRepository) Follow(ctx context.Context, social *Social) error {
 
 func (r *SocialRepository) Unfollow(ctx context.Context, social *Social) error {
 	return r.db.WithContext(ctx).
-		Where("follower_id = ? AND vlogger_id = ?", social.FollowerID, social.FolloweeID).
+		Where("follower_id = ? AND followee_id = ?", social.FollowerID, social.FolloweeID).
 		Delete(&Social{}).Error
 }
 
 func (r *SocialRepository) GetFollowers(ctx context.Context, followeeID uint, limit int, cursor uint) ([]*account.Account, uint, bool, error) {
-	return r.listAccounts(ctx, "vlogger_id", followeeID, limit, cursor, true)
+	return r.listAccounts(ctx, "followee_id", followeeID, limit, cursor, true)
 }
 
 func (r *SocialRepository) GetFollowees(ctx context.Context, followerID uint, limit int, cursor uint) ([]*account.Account, uint, bool, error) {
@@ -82,7 +82,7 @@ func (r *SocialRepository) IsFollowed(ctx context.Context, social *Social) (bool
 	var count int64
 	if err := r.db.WithContext(ctx).
 		Model(&Social{}).
-		Where("follower_id = ? AND vlogger_id = ?", social.FollowerID, social.FolloweeID).
+		Where("follower_id = ? AND followee_id = ?", social.FollowerID, social.FolloweeID).
 		Count(&count).Error; err != nil {
 		return false, err
 	}
@@ -91,7 +91,7 @@ func (r *SocialRepository) IsFollowed(ctx context.Context, social *Social) (bool
 
 func (r *SocialRepository) CountFollowers(ctx context.Context, followeeID uint) (int64, error) {
 	var count int64
-	if err := r.db.WithContext(ctx).Model(&Social{}).Where("vlogger_id = ?", followeeID).Count(&count).Error; err != nil {
+	if err := r.db.WithContext(ctx).Model(&Social{}).Where("followee_id = ?", followeeID).Count(&count).Error; err != nil {
 		return 0, err
 	}
 	return count, nil
@@ -106,11 +106,11 @@ func (r *SocialRepository) CountFollowees(ctx context.Context, followerID uint) 
 }
 
 func (r *SocialRepository) ListFollowerIDs(ctx context.Context, followeeID uint, limit int, cursor uint) ([]uint, uint, bool, error) {
-	return r.listRelationIDs(ctx, "vlogger_id", followeeID, "follower_id", limit, cursor)
+	return r.listRelationIDs(ctx, "followee_id", followeeID, "follower_id", limit, cursor)
 }
 
 func (r *SocialRepository) ListFolloweeIDs(ctx context.Context, followerID uint, limit int, cursor uint) ([]uint, uint, bool, error) {
-	return r.listRelationIDs(ctx, "follower_id", followerID, "vlogger_id", limit, cursor)
+	return r.listRelationIDs(ctx, "follower_id", followerID, "followee_id", limit, cursor)
 }
 
 func (r *SocialRepository) listRelationIDs(ctx context.Context, ownerColumn string, ownerID uint, targetColumn string, limit int, cursor uint) ([]uint, uint, bool, error) {
