@@ -151,27 +151,26 @@ func (f *FeedService) GetVideoByIDs(ctx context.Context, videoIDs []uint) ([]*vi
 }
 
 // 查询最新视频 (冷热分离 + 游标分页)
-func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore time.Time, viewerAccountID uint) (ListLatestResponse, error) {
+func (f *FeedService) ListLatest(ctx context.Context, limit int, cursor TimelineCursor, viewerAccountID uint) (ListLatestResponse, error) {
+
 	if f.rediscache == nil {
-		return f.listLatestFromDB(ctx, limit, latestBefore, viewerAccountID)
+		return f.listLatestFromDB(ctx, limit, cursor, viewerAccountID)
 	}
 
 	// 获取 ZSET 中最老的一条数据
 	zsetTail, err := f.rediscache.ZRangeWithScores(ctx, f.rediscache.GlobalTimelineKey(), 0, 0)
-
 	if err != nil {
-		return f.listLatestFromDB(ctx, limit, latestBefore, viewerAccountID)
+		return f.listLatestFromDB(ctx, limit, cursor, viewerAccountID)
 	}
 
 	isZsetEmpty := len(zsetTail) == 0
 
 	if isZsetEmpty {
-		//全局静态锁：无视所有用户的不同时间戳游标
-		sfKey := f.rediscache.GlobalTimelineRebuildSingleflightKey()
+		sfKey := f.rediscache.GlobalTimelineKey()
 
 		v, err, _ := f.requestGroup.Do(sfKey, func() (interface{}, error) {
 			// 无视游标，直接去 MySQL 捞最新的 1000 条
-			dbVideos, err := f.repo.ListLatest(ctx, 1000, time.Time{})
+			dbVideos, err := f.repo.ListLatest(ctx, 1000, cursor)
 			if err != nil {
 				return nil, err
 			}
@@ -189,7 +188,7 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore ti
 					Member: fmt.Sprintf("%d", vid.ID),
 				})
 			}
-			f.rediscache.ZAdd(bgCtx, f.rediscache.GlobalTimelineKey(), zElements...)
+			f.rediscache.ZAdd(bgCtx, f.rediscache.Key("feed:global_timeline"), zElements...)
 			return "SUCCESS", nil
 		})
 
@@ -201,13 +200,13 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore ti
 		}
 
 		// 让所有被阻塞的请求重新查一遍
-		return f.ListLatest(ctx, limit, latestBefore, viewerAccountID)
+		return f.ListLatest(ctx, limit, cursor, viewerAccountID)
 	}
 
 	watermark := int64(zsetTail[0].Score)
 	reqTime := time.Now().UnixMilli()
-	if !latestBefore.IsZero() {
-		reqTime = latestBefore.UnixMilli()
+	if !cursor.CreateTime.IsZero() {
+		reqTime = cursor.CreateTime.UnixMilli()
 	}
 
 	var baseVideos []*video.Video
@@ -216,33 +215,20 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore ti
 		//冷数据降级查库
 
 		// 针对个别用户的防并发（此时可以用时间戳做锁，因为冷尾流量极小）
-		sfKey := f.rediscache.ColdLatestSingleflightKey(limit, reqTime)
+		sfKey := f.rediscache.GlobalTimelineKey()
 		v, err, _ := f.requestGroup.Do(sfKey, func() (interface{}, error) {
-			return f.repo.ListLatest(ctx, limit, latestBefore)
+			return f.repo.ListLatest(ctx, limit, cursor)
 		})
 		if err != nil {
 			return ListLatestResponse{}, err
 		}
 		baseVideos = v.([]*video.Video)
 		// 不回写 ZSET，防止冷数据污染热点时间线
-
 	} else {
 		// 热数据直接查redis
-		maxScore := "+inf"
-		if !latestBefore.IsZero() {
-			maxScore = fmt.Sprintf("%d", reqTime-1) // 防重复
-		}
-
-		videoIDsStr, err := f.rediscache.ZRevRangeByScore(ctx, f.rediscache.GlobalTimelineKey(), maxScore, "-inf", 0, int64(limit))
+		videoIDs, err := f.latestRedisIDs(ctx, limit, cursor)
 		if err != nil {
 			return ListLatestResponse{}, err
-		}
-
-		var videoIDs []uint
-		for _, idStr := range videoIDsStr {
-			if id, err := strconv.ParseUint(idStr, 10, 64); err == nil {
-				videoIDs = append(videoIDs, uint(id))
-			}
 		}
 
 		if len(videoIDs) > 0 {
@@ -252,18 +238,23 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore ti
 			}
 		}
 
-		// 刚好击穿了冷热边界
 		if len(baseVideos) < limit {
 			remainLimit := limit - len(baseVideos) // 计算还差几个
 
-			var coldCursor time.Time
+			var coldCursor TimelineCursor
 			if len(baseVideos) > 0 {
-				coldCursor = baseVideos[len(baseVideos)-1].CreateTime
+				coldCursor = TimelineCursor{
+					CreateTime: baseVideos[len(baseVideos)-1].CreateTime,
+					VideoID:    baseVideos[len(baseVideos)-1].ID,
+				}
 			} else {
-				coldCursor = latestBefore
+				coldCursor = TimelineCursor{
+					CreateTime: cursor.CreateTime,
+					VideoID:    cursor.VideoID,
+				}
 			}
 
-			sfKey := f.rediscache.StitchedLatestSingleflightKey(remainLimit, coldCursor.UnixMilli())
+			sfKey := f.rediscache.GlobalTimelineKey()
 			v, err, _ := f.requestGroup.Do(sfKey, func() (interface{}, error) {
 				return f.repo.ListLatest(ctx, remainLimit, coldCursor)
 			})
@@ -275,10 +266,13 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore ti
 		}
 	}
 
-	var nextTime int64
+	var nextCursor TimelineCursor
 	if len(baseVideos) > 0 {
 		// 将本页最后一条视频的时间作为下一次请求的游标
-		nextTime = baseVideos[len(baseVideos)-1].CreateTime.UnixMilli()
+		nextCursor = TimelineCursor{
+			CreateTime: baseVideos[len(baseVideos)-1].CreateTime,
+			VideoID:    baseVideos[len(baseVideos)-1].ID,
+		}
 	}
 	hasMore := len(baseVideos) == limit
 
@@ -288,30 +282,100 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, latestBefore ti
 	}
 
 	return ListLatestResponse{
-		VideoList: feedVideos,
-		NextTime:  nextTime,
-		HasMore:   hasMore,
+		VideoList:  feedVideos,
+		NextCursor: encodeTimelineCursor(nextCursor),
+		HasMore:    hasMore,
 	}, nil
 }
 
-func (f *FeedService) listLatestFromDB(ctx context.Context, limit int, latestBefore time.Time, viewerAccountID uint) (ListLatestResponse, error) {
-	videos, err := f.repo.ListLatest(ctx, limit, latestBefore)
+func (f *FeedService) latestRedisIDs(ctx context.Context, limit int, cursor TimelineCursor) ([]uint, error) {
+	key := f.rediscache.GlobalTimelineKey()
+	ids := make([]uint, 0, limit+1)
+
+	// 如果不是首页,取当前 curScore && id<cursor.id
+	if !cursor.CreateTime.IsZero() {
+		curScore := fmt.Sprint(cursor.CreateTime.UnixMilli())
+		sameTime, err := f.rediscache.ZRevRangeByScore(
+			ctx,
+			key,
+			curScore,
+			curScore,
+			0,
+			1000,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for _, member := range sameTime {
+			id, err := strconv.ParseUint(member, 10, 64)
+			if err == nil && id > 0 && uint(id) < cursor.VideoID {
+				ids = append(ids, uint(id))
+			}
+		}
+	}
+
+	// 取 curScore < time
+	maxScore := "+inf"
+	if !cursor.CreateTime.IsZero() {
+		maxScore = fmt.Sprint(cursor.CreateTime.UnixMilli() - 1)
+	}
+	earlier, err := f.rediscache.ZRevRangeByScore(
+		ctx,
+		key,
+		maxScore,
+		"-inf",
+		0,
+		int64(limit+1),
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// 组装
+	for _, member := range earlier {
+		id, err := strconv.ParseUint(member, 10, 64)
+		if err == nil && id > 0 {
+			ids = append(ids, uint(id))
+		}
+	}
+	return ids, nil
+}
+
+func (f *FeedService) listLatestFromDB(ctx context.Context, limit int, cursor TimelineCursor, viewerAccountID uint) (ListLatestResponse, error) {
+	videos, err := f.repo.ListLatest(ctx, limit+1, cursor)
 	if err != nil {
 		return ListLatestResponse{}, err
 	}
-	feedVideos, err := f.buildFeedVideos(ctx, videos, viewerAccountID)
+	return f.latestResponse(ctx, videos, limit, viewerAccountID)
+}
+
+func sortLatestVideos(videos []*video.Video) {
+	sort.Slice(videos, func(i, j int) bool {
+		if videos[i].CreateTime.UnixMilli() == videos[j].CreateTime.UnixMilli() {
+			return videos[i].ID > videos[j].ID
+		}
+		return videos[i].CreateTime.UnixMilli() > videos[j].CreateTime.UnixMilli()
+	})
+}
+
+func (f *FeedService) latestResponse(ctx context.Context, videos []*video.Video, limit int, viewerAccountID uint) (ListLatestResponse, error) {
+	hasMore := len(videos) > limit
+	if hasMore {
+		videos = videos[:limit]
+	}
+	items, err := f.buildFeedVideos(ctx, videos, viewerAccountID)
 	if err != nil {
 		return ListLatestResponse{}, err
 	}
-	var nextTime int64
+	nextCursor := ""
 	if len(videos) > 0 {
-		nextTime = videos[len(videos)-1].CreateTime.UnixMilli()
+		last := videos[len(videos)-1]
+		nextCursor = encodeTimelineCursor(TimelineCursor{
+			CreateTime: last.CreateTime,
+			VideoID:    last.ID,
+		})
 	}
-	return ListLatestResponse{
-		VideoList: feedVideos,
-		NextTime:  nextTime,
-		HasMore:   len(videos) == limit,
-	}, nil
+	return ListLatestResponse{VideoList: items, NextCursor: nextCursor, HasMore: hasMore}, nil
 }
 
 func (f *FeedService) buildFeedVideos(ctx context.Context, videos []*video.Video, viewerAccountID uint) ([]FeedVideoItem, error) {
@@ -341,7 +405,11 @@ func (f *FeedService) buildFeedVideos(ctx context.Context, videos []*video.Video
 	return feedVideos, nil
 }
 
-func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf int64, offset int, viewerID uint, latestPopularity int64, latestBefore time.Time, latestID uint) (ListByPopularityResponse, error) {
+func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf int64, offset int, viewerID uint, cursor PopularCursor) (ListByPopularityResponse, error) {
+	if limit <= 0 || limit > 50 {
+		limit = DefaultLimit
+	}
+
 	// Redis 热榜（稳定分页：as_of + offset）
 	if f.rediscache != nil {
 		asOf := time.Now().UTC().Truncate(time.Minute)
@@ -401,7 +469,7 @@ func (f *FeedService) ListByPopularity(ctx context.Context, limit int, reqAsOf i
 			}
 		}
 	}
-	videos, err := f.repo.ListByPopularity(ctx, limit, latestPopularity, latestBefore, latestID)
+	videos, err := f.repo.ListByPopularity(ctx, limit, cursor)
 	if err != nil {
 		return ListByPopularityResponse{}, err
 	}
@@ -419,8 +487,7 @@ func setPopularityCursor(resp *ListByPopularityResponse, videos []*video.Video) 
 		return
 	}
 	last := videos[len(videos)-1]
-	popularity, before, id := last.Popularity, last.CreateTime, last.ID
-	resp.NextLatestPopularity, resp.NextLatestBefore, resp.NextLatestIDBefore = &popularity, &before, &id
+	resp.NextCursor = encodePopularCursor(PopularCursor{Popularity: last.Popularity, CreateTime: last.CreateTime, VideoID: last.ID})
 }
 
 func buildOrderedResult(orderedIDs []uint, dataMap map[uint]*video.Video) []*video.Video {
@@ -436,17 +503,11 @@ func buildOrderedResult(orderedIDs []uint, dataMap map[uint]*video.Video) []*vid
 const BigCreatorFollowerThreshold = 1000
 
 var ErrInvalidFollowingCursor = errors.New("invalid following cursor")
+var ErrInvalidPopularCursor = errors.New("invalid popular cursor")
 
-func (f *FeedService) listFollowingFromDB(ctx context.Context, viewerID uint, limit int, rawCursor string) (ListFollowingResponse, error) {
+func (f *FeedService) listFollowingFromDB(ctx context.Context, limit int, cursor TimelineCursor, viewerID uint) (ListFollowingResponse, error) {
 	if viewerID == 0 {
 		return ListFollowingResponse{}, errors.New("login required")
-	}
-	if limit <= 0 || limit > 50 {
-		limit = DefaultLimit
-	}
-	cursor, err := parseTimelineCursor(rawCursor)
-	if err != nil {
-		return ListFollowingResponse{}, err
 	}
 	videos, err := f.repo.ListFollowingVideos(ctx, viewerID, &cursor, limit+1)
 	if err != nil {
@@ -463,25 +524,28 @@ func (f *FeedService) listFollowingFromDB(ctx context.Context, viewerID uint, li
 	nextCursor := ""
 	if len(videos) > 0 {
 		last := videos[len(videos)-1]
-		nextCursor = encodeTimelineCursor(last.CreateTime, last.ID)
+		nextCursor = encodeTimelineCursor(TimelineCursor{
+			CreateTime: last.CreateTime,
+			VideoID:    last.ID,
+		})
 	}
 	return ListFollowingResponse{VideoList: items, NextCursor: nextCursor, HasMore: hasMore}, nil
 }
 
 // ListFollowing merges Redis indexes with MySQL for cold or incomplete pages.
-func (f *FeedService) ListFollowing(ctx context.Context, viewerID uint, limit int, rawCursor string) (ListFollowingResponse, error) {
+func (f *FeedService) ListFollowing(ctx context.Context, limit int, cursor TimelineCursor, viewerID uint) (ListFollowingResponse, error) {
+	if limit <= 0 || limit > 50 {
+		limit = DefaultLimit
+	}
+
 	if f.rediscache == nil {
-		return f.listFollowingFromDB(ctx, viewerID, limit, rawCursor)
+		return f.listFollowingFromDB(ctx, limit, cursor, viewerID)
 	}
 	if viewerID == 0 {
 		return ListFollowingResponse{}, errors.New("login required")
 	}
 	if limit <= 0 || limit > 50 {
 		limit = 10
-	}
-	cursor, err := parseTimelineCursor(rawCursor)
-	if err != nil {
-		return ListFollowingResponse{}, err
 	}
 	authors, err := f.repo.ListFollowingAuthorIDs(ctx, viewerID)
 	if err != nil {
@@ -531,7 +595,7 @@ func (f *FeedService) ListFollowing(ctx context.Context, viewerID uint, limit in
 			break
 		}
 		last := page[len(page)-1]
-		dbCursor = TimelineCurosr{CreateTime: last.CreateTime, VideoID: last.ID}
+		dbCursor = TimelineCursor{CreateTime: last.CreateTime, VideoID: last.ID}
 	}
 	sort.Slice(valid, func(i, j int) bool {
 		if valid[i].CreateTime.UnixMilli() == valid[j].CreateTime.UnixMilli() {
@@ -553,7 +617,10 @@ func (f *FeedService) ListFollowing(ctx context.Context, viewerID uint, limit in
 	nextCursor := ""
 	if len(valid) > 0 {
 		last := valid[len(valid)-1]
-		nextCursor = encodeTimelineCursor(last.CreateTime, last.ID)
+		nextCursor = encodeTimelineCursor(TimelineCursor{
+			CreateTime: last.CreateTime,
+			VideoID:    last.ID,
+		})
 	}
 	return ListFollowingResponse{VideoList: items, NextCursor: nextCursor, HasMore: hasMore}, nil
 }
@@ -618,29 +685,49 @@ func beforeFollowingCursor(created time.Time, videoID uint, before time.Time, be
 		(created.UnixMilli() == before.UnixMilli() && videoID < beforeID)
 }
 
-func parseTimelineCursor(raw string) (TimelineCurosr, error) {
+func parseTimelineCursor(raw string) (TimelineCursor, error) {
 	if raw == "" {
-		return TimelineCurosr{}, nil
+		return TimelineCursor{}, nil
 	}
 	content, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
-		return TimelineCurosr{}, ErrInvalidFollowingCursor
+		return TimelineCursor{}, ErrInvalidFollowingCursor
 	}
 	var cursor struct {
 		CreateTime time.Time `json:"create_time"`
 		VideoID    uint      `json:"video_id"`
 	}
 	if err := json.Unmarshal(content, &cursor); err != nil || cursor.CreateTime.IsZero() || cursor.VideoID == 0 {
-		return TimelineCurosr{}, ErrInvalidFollowingCursor
+		return TimelineCursor{}, ErrInvalidFollowingCursor
 	}
-	return TimelineCurosr{CreateTime: cursor.CreateTime, VideoID: cursor.VideoID}, nil
+	return TimelineCursor{CreateTime: cursor.CreateTime, VideoID: cursor.VideoID}, nil
 }
 
-func encodeTimelineCursor(created time.Time, videoID uint) string {
-	content, err := json.Marshal(struct {
-		CreateTime time.Time `json:"create_time"`
-		VideoID    uint      `json:"video_id"`
-	}{created, videoID})
+func encodeTimelineCursor(cursor TimelineCursor) string {
+	content, err := json.Marshal(cursor)
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(content)
+}
+
+func parsePopularCursor(raw string) (PopularCursor, error) {
+	if raw == "" {
+		return PopularCursor{}, nil
+	}
+	content, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return PopularCursor{}, ErrInvalidPopularCursor
+	}
+	var cursor PopularCursor
+	if err := json.Unmarshal(content, &cursor); err != nil || cursor.Popularity < 0 || cursor.CreateTime.IsZero() || cursor.VideoID == 0 {
+		return PopularCursor{}, ErrInvalidPopularCursor
+	}
+	return cursor, nil
+}
+
+func encodePopularCursor(cursor PopularCursor) string {
+	content, err := json.Marshal(cursor)
 	if err != nil {
 		return ""
 	}

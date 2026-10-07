@@ -4,7 +4,6 @@ import (
 	"kirfeed/internal/apierror"
 	"kirfeed/internal/infra/jwt"
 	"net/http"
-	"time"
 
 	"github.com/gin-gonic/gin"
 )
@@ -25,18 +24,20 @@ func (f *FeedHandler) ListLatest(c *gin.Context) {
 		c.JSON(apierror.ClassifyHTTPStatus(apierror.ErrValidation), gin.H{"error": err.Error()})
 		return
 	}
+	cursor, err := parseTimelineCursor(req.Cursor)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if req.Limit <= 0 || req.Limit > 50 {
 		req.Limit = DefaultLimit
 	}
-	var latestTime time.Time
-	if req.LatestTime > 0 {
-		latestTime = time.UnixMilli(req.LatestTime)
-	}
-	viewerAccountID, err := jwt.GetAccountID(c)
+
+	viewerID, err := jwt.GetAccountID(c)
 	if err != nil {
-		viewerAccountID = 0
+		viewerID = 0
 	}
-	feedItems, err := f.service.ListLatest(c.Request.Context(), req.Limit, latestTime, viewerAccountID)
+	feedItems, err := f.service.ListLatest(c.Request.Context(), req.Limit, cursor, viewerID)
 	if err != nil {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
@@ -58,12 +59,18 @@ func (f *FeedHandler) ListFollowing(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	cursor, err := parseTimelineCursor(req.Cursor)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	viewerID, err := jwt.GetAccountID(c)
 	if err != nil || viewerID == 0 {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "login required"})
 		return
 	}
-	resp, err := f.service.ListFollowing(c.Request.Context(), viewerID, req.Limit, req.Cursor)
+	resp, err := f.service.ListFollowing(c.Request.Context(), req.Limit, cursor, viewerID)
 	if err != nil {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
@@ -78,20 +85,14 @@ func (f *FeedHandler) ListByPopularity(c *gin.Context) {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})
 		return
 	}
-	if req.Limit <= 0 || req.Limit > 50 {
-		req.Limit = 10
-	}
-	if req.Offset < 0 || req.AsOf < 0 || req.LatestPopularity < 0 {
+	if req.Offset < 0 || req.AsOf < 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid input"})
 		return
 	}
-	var latestID uint
-	if !req.LatestBefore.IsZero() || req.LatestIDBefore != nil {
-		if req.LatestBefore.IsZero() || req.LatestIDBefore == nil || *req.LatestIDBefore == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "latest_before and latest_id_before must be provided together"})
-			return
-		}
-		latestID = *req.LatestIDBefore
+	popularCursor, err := parsePopularCursor(req.Cursor)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
 	}
 	viewerID, _ := jwt.GetAccountID(c)
 	resp, err := f.service.ListByPopularity(
@@ -100,9 +101,7 @@ func (f *FeedHandler) ListByPopularity(c *gin.Context) {
 		req.AsOf,
 		req.Offset,
 		viewerID,
-		req.LatestPopularity,
-		req.LatestBefore,
-		latestID,
+		popularCursor,
 	)
 	if err != nil {
 		c.JSON(apierror.ClassifyHTTPStatus(err), gin.H{"error": err.Error()})

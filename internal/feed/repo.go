@@ -3,7 +3,6 @@ package feed
 import (
 	"context"
 	"kirfeed/internal/video"
-	"time"
 
 	"gorm.io/gorm"
 )
@@ -16,12 +15,12 @@ func NewFeedRepository(db *gorm.DB) *FeedRepository {
 	return &FeedRepository{db: db}
 }
 
-func (repo *FeedRepository) ListLatest(ctx context.Context, limit int, latestBefore time.Time) ([]*video.Video, error) {
+func (repo *FeedRepository) ListLatest(ctx context.Context, limit int, cursor TimelineCursor) ([]*video.Video, error) {
 	var videos []*video.Video
 	query := repo.db.WithContext(ctx).Model(&video.Video{}).
-		Order("create_time DESC")
-	if !latestBefore.IsZero() {
-		query = query.Where("create_time < ?", latestBefore)
+		Order("create_time DESC, id DESC")
+	if !cursor.CreateTime.IsZero() && cursor.VideoID > 0 {
+		query = query.Where("create_time < ? OR (create_time = ? AND id < ?)", cursor.CreateTime, cursor.CreateTime, cursor.VideoID)
 	}
 	if err := query.Limit(limit).Find(&videos).Error; err != nil {
 		return nil, err
@@ -55,7 +54,7 @@ func (repo *FeedRepository) ListBigFollowingAuthorIDs(ctx context.Context, follo
 	return ids, err
 }
 
-func (repo *FeedRepository) ListFollowingVideos(ctx context.Context, followerID uint, cursor *TimelineCurosr, limit int) ([]*video.Video, error) {
+func (repo *FeedRepository) ListFollowingVideos(ctx context.Context, followerID uint, cursor *TimelineCursor, limit int) ([]*video.Video, error) {
 	var videos []*video.Video
 	query := repo.db.WithContext(ctx).
 		Table("videos AS v").
@@ -74,13 +73,13 @@ func (repo *FeedRepository) ListFollowingVideos(ctx context.Context, followerID 
 	return videos, err
 }
 
-func (repo *FeedRepository) ListByPopularity(ctx context.Context, limit int, popularityBefore int64, timeBefore time.Time, idBefore uint) ([]*video.Video, error) {
+func (repo *FeedRepository) ListByPopularity(ctx context.Context, limit int, cursor PopularCursor) ([]*video.Video, error) {
 	var videos []*video.Video
 	query := repo.db.WithContext(ctx).Model(&video.Video{}).Order("popularity DESC, create_time DESC, id DESC")
-	if !timeBefore.IsZero() && idBefore > 0 {
+	if !cursor.CreateTime.IsZero() && cursor.VideoID > 0 {
 		query = query.Where(
 			"(popularity < ?) OR (popularity = ? AND create_time < ?) OR (popularity = ? AND create_time = ? AND id < ?)",
-			popularityBefore, popularityBefore, timeBefore, popularityBefore, timeBefore, idBefore,
+			cursor.Popularity, cursor.Popularity, cursor.CreateTime, cursor.Popularity, cursor.CreateTime, cursor.VideoID,
 		)
 	}
 	if err := query.Limit(limit).Find(&videos).Error; err != nil {
