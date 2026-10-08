@@ -62,7 +62,7 @@ func (repo *FeedRepository) ListFollowingVideos(ctx context.Context, followerID 
 		Joins("JOIN socials AS f ON f.followee_id = v.author_id").
 		Where("f.follower_id = ?", followerID)
 
-	if cursor != nil {
+	if cursor != nil && !cursor.CreateTime.IsZero() && cursor.VideoID > 0 {
 		query = query.Where(
 			"v.create_time < ? OR (v.create_time = ? AND v.id < ?)",
 			cursor.CreateTime, cursor.CreateTime, cursor.VideoID,

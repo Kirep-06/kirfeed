@@ -209,83 +209,46 @@ func (f *FeedService) ListLatest(ctx context.Context, limit int, cursor Timeline
 		reqTime = cursor.CreateTime.UnixMilli()
 	}
 
-	var baseVideos []*video.Video
-
 	if reqTime <= watermark {
-		//冷数据降级查库
-
-		// 针对个别用户的防并发（此时可以用时间戳做锁，因为冷尾流量极小）
-		sfKey := f.rediscache.GlobalTimelineKey()
-		v, err, _ := f.requestGroup.Do(sfKey, func() (interface{}, error) {
-			return f.repo.ListLatest(ctx, limit, cursor)
-		})
-		if err != nil {
-			return ListLatestResponse{}, err
-		}
-		baseVideos = v.([]*video.Video)
-		// 不回写 ZSET，防止冷数据污染热点时间线
-	} else {
-		// 热数据直接查redis
-		videoIDs, err := f.latestRedisIDs(ctx, limit, cursor)
-		if err != nil {
-			return ListLatestResponse{}, err
-		}
-
-		if len(videoIDs) > 0 {
-			baseVideos, err = f.GetVideoByIDs(ctx, videoIDs)
-			if err != nil {
-				return ListLatestResponse{}, err
-			}
-		}
-
-		if len(baseVideos) < limit {
-			remainLimit := limit - len(baseVideos) // 计算还差几个
-
-			var coldCursor TimelineCursor
-			if len(baseVideos) > 0 {
-				coldCursor = TimelineCursor{
-					CreateTime: baseVideos[len(baseVideos)-1].CreateTime,
-					VideoID:    baseVideos[len(baseVideos)-1].ID,
-				}
-			} else {
-				coldCursor = TimelineCursor{
-					CreateTime: cursor.CreateTime,
-					VideoID:    cursor.VideoID,
-				}
-			}
-
-			sfKey := f.rediscache.GlobalTimelineKey()
-			v, err, _ := f.requestGroup.Do(sfKey, func() (interface{}, error) {
-				return f.repo.ListLatest(ctx, remainLimit, coldCursor)
-			})
-
-			if err == nil {
-				coldVideos := v.([]*video.Video)
-				baseVideos = append(baseVideos, coldVideos...)
-			}
-		}
+		return f.listLatestFromDB(ctx, limit, cursor, viewerAccountID)
 	}
-
-	var nextCursor TimelineCursor
-	if len(baseVideos) > 0 {
-		// 将本页最后一条视频的时间作为下一次请求的游标
-		nextCursor = TimelineCursor{
-			CreateTime: baseVideos[len(baseVideos)-1].CreateTime,
-			VideoID:    baseVideos[len(baseVideos)-1].ID,
-		}
-	}
-	hasMore := len(baseVideos) == limit
-
-	feedVideos, err := f.buildFeedVideos(ctx, baseVideos, viewerAccountID)
+	videoIDs, err := f.latestRedisIDs(ctx, limit, cursor)
 	if err != nil {
 		return ListLatestResponse{}, err
 	}
+	baseVideos, err := f.GetVideoByIDs(ctx, videoIDs)
+	if err != nil {
+		return ListLatestResponse{}, err
+	}
+	sortLatestVideos(baseVideos)
+	// 刚好击穿了冷热边界
+	if len(baseVideos) < limit+1 {
+		remainLimit := limit - len(baseVideos) // 计算还差几个
 
-	return ListLatestResponse{
-		VideoList:  feedVideos,
-		NextCursor: encodeTimelineCursor(nextCursor),
-		HasMore:    hasMore,
-	}, nil
+		var coldCursor TimelineCursor
+		if len(baseVideos) > 0 {
+			last := baseVideos[len(baseVideos)-1]
+			coldCursor = TimelineCursor{
+				CreateTime: last.CreateTime,
+				VideoID:    last.ID,
+			}
+		} else {
+			coldCursor = cursor
+		}
+
+		sfKey := f.rediscache.GlobalTimelineKey()
+		v, err, _ := f.requestGroup.Do(sfKey, func() (interface{}, error) {
+			return f.repo.ListLatest(ctx, remainLimit+1, coldCursor)
+		})
+
+		if err == nil {
+			coldVideos := v.([]*video.Video)
+			baseVideos = append(baseVideos, coldVideos...)
+		}
+
+		sortLatestVideos(baseVideos)
+	}
+	return f.latestResponse(ctx, baseVideos, limit, viewerAccountID)
 }
 
 func (f *FeedService) latestRedisIDs(ctx context.Context, limit int, cursor TimelineCursor) ([]uint, error) {
@@ -312,6 +275,9 @@ func (f *FeedService) latestRedisIDs(ctx context.Context, limit int, cursor Time
 				ids = append(ids, uint(id))
 			}
 		}
+		if len(ids) >= limit+1 {
+			return ids, nil
+		}
 	}
 
 	// 取 curScore < time
@@ -325,7 +291,7 @@ func (f *FeedService) latestRedisIDs(ctx context.Context, limit int, cursor Time
 		maxScore,
 		"-inf",
 		0,
-		int64(limit+1),
+		int64(limit-len(ids)+1),
 	)
 	if err != nil {
 		return nil, err
