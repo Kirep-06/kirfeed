@@ -65,6 +65,11 @@ func (f *FeedHandler) ListFollowing(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	if req.Limit <= 0 || req.Limit > 50 {
+		req.Limit = DefaultLimit
+	}
+
 	viewerID, err := jwt.GetAccountID(c)
 	if err != nil || viewerID == 0 {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "login required"})
@@ -94,6 +99,11 @@ func (f *FeedHandler) ListByPopularity(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	if req.Limit <= 0 || req.Limit > 50 {
+		req.Limit = DefaultLimit
+	}
+
 	viewerID, _ := jwt.GetAccountID(c)
 	resp, err := f.service.ListByPopularity(
 		c.Request.Context(),

@@ -500,18 +500,11 @@ func (f *FeedService) listFollowingFromDB(ctx context.Context, limit int, cursor
 
 // ListFollowing merges Redis indexes with MySQL for cold or incomplete pages.
 func (f *FeedService) ListFollowing(ctx context.Context, limit int, cursor TimelineCursor, viewerID uint) (ListFollowingResponse, error) {
-	if limit <= 0 || limit > 50 {
-		limit = DefaultLimit
-	}
-
 	if f.rediscache == nil {
 		return f.listFollowingFromDB(ctx, limit, cursor, viewerID)
 	}
 	if viewerID == 0 {
 		return ListFollowingResponse{}, errors.New("login required")
-	}
-	if limit <= 0 || limit > 50 {
-		limit = 10
 	}
 	authors, err := f.repo.ListFollowingAuthorIDs(ctx, viewerID)
 	if err != nil {
