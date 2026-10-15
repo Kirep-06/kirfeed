@@ -48,7 +48,7 @@ type ListByPopularityRequest struct {
 	Cursor string `json:"cursor"` // MySQL 兜底分页游标
 }
 
-type ListByPopularityResponse struct {
+type ListPopularityResponse struct {
 	VideoList  []FeedVideoItem `json:"video_list"`
 	AsOf       int64           `json:"as_of"`
 	NextOffset int             `json:"next_offset"`

@@ -473,7 +473,7 @@ func (f *FeedService) listFollowingFromDB(ctx context.Context, limit int, cursor
 	if err != nil {
 		return ListFollowingResponse{}, err
 	}
-	return f.timelineResponse(ctx, videos, limit, viewerID)
+	return f.followingResponse(ctx, videos, limit, viewerID)
 }
 
 // ListFollowing merges Redis indexes with MySQL for cold or incomplete pages.
@@ -538,7 +538,19 @@ func (f *FeedService) ListFollowing(ctx context.Context, limit int, cursor Timel
 		}
 		sortFollowingVideos(baseVideos)
 	}
-	return f.timelineResponse(ctx, baseVideos, limit, viewerID)
+	return f.followingResponse(ctx, baseVideos, limit, viewerID)
+}
+
+func (f *FeedService) followingResponse(ctx context.Context, videos []*video.Video, limit int, viewerID uint) (ListFollowingResponse, error) {
+	resp, err := f.timelineResponse(ctx, videos, limit, viewerID)
+	if err != nil {
+		return ListFollowingResponse{}, err
+	}
+	return ListFollowingResponse{
+		VideoList:  resp.VideoList,
+		NextCursor: resp.NextCursor,
+		HasMore:    resp.HasMore,
+	}, nil
 }
 
 // 从Redis中分别读取 inbox与Outbox
