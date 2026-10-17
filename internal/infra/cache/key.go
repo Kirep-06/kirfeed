@@ -60,6 +60,10 @@ func (c *Client) FollowingFeedPatternKey(accountID uint) string {
 	return c.Key("feed:listByFollowing:*:accountID=%d:*", accountID)
 }
 
+func (c *Client) FollowingRelationsKey(accountID uint) string {
+	return c.Key("feed:listByFollowing:relations:accountID=%d:meta", accountID)
+}
+
 func (c *Client) AuthorOutboxKey(authorID uint) string {
 	return c.Key("feed:author_outbox:%d", authorID)
 }

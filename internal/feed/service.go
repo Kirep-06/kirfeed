@@ -465,79 +465,66 @@ func buildOrderedResult(orderedIDs []uint, dataMap map[uint]*video.Video) []*vid
 
 const BigCreatorFollowerThreshold = 1000
 
-func (f *FeedService) listFollowingFromDB(ctx context.Context, limit int, cursor TimelineCursor, viewerID uint) (ListFollowingResponse, error) {
-	if viewerID == 0 {
-		return ListFollowingResponse{}, errors.New("login required")
-	}
-	videos, err := f.repo.ListFollowingVideos(ctx, viewerID, &cursor, limit+1)
-	if err != nil {
-		return ListFollowingResponse{}, err
-	}
-	return f.followingResponse(ctx, videos, limit, viewerID)
+type followingRelations struct {
+	Authors     []uint `json:"authors"`
+	BigCreators []uint `json:"big_creators"`
 }
 
-// ListFollowing merges Redis indexes with MySQL for cold or incomplete pages.
-func (f *FeedService) ListFollowing(ctx context.Context, limit int, cursor TimelineCursor, viewerID uint) (ListFollowingResponse, error) {
-	if f.rediscache == nil {
-		log.Printf("following feed Redis client unavailable, falling back to MySQL")
-		return f.listFollowingFromDB(ctx, limit, cursor, viewerID)
-	}
-	if viewerID == 0 {
-		return ListFollowingResponse{}, errors.New("login required")
+func (f *FeedService) getFollowingRelations(ctx context.Context, viewerID uint) (followingRelations, error) {
+	key := f.rediscache.FollowingRelationsKey(viewerID)
+	if cached, err := f.rediscache.GetBytes(ctx, key); err == nil {
+		var relations followingRelations
+		if json.Unmarshal(cached, &relations) == nil {
+			return relations, nil
+		}
 	}
 	authors, err := f.repo.ListFollowingAuthorIDs(ctx, viewerID)
 	if err != nil {
-		return ListFollowingResponse{}, err
+		return followingRelations{}, err
 	}
-	if len(authors) == 0 {
-		return ListFollowingResponse{VideoList: []FeedVideoItem{}}, nil
+	relations := followingRelations{Authors: authors}
+	if len(authors) > 0 {
+		relations.BigCreators, err = f.repo.ListBigFollowingAuthorIDs(ctx, authors)
+		if err != nil {
+			return followingRelations{}, err
+		}
 	}
-	bigCreators, err := f.repo.ListBigFollowingAuthorIDs(ctx, viewerID)
+	if encoded, err := json.Marshal(relations); err == nil {
+		_ = f.rediscache.SetBytes(ctx, key, encoded, 30*time.Second)
+	}
+	return relations, nil
+}
+
+// ListFollowing reads candidate IDs from the follower inbox and followed authors' outboxes.
+func (f *FeedService) ListFollowing(ctx context.Context, limit int, cursor TimelineCursor, viewerID uint) (ListFollowingResponse, error) {
+	if f.rediscache == nil {
+		return ListFollowingResponse{}, errors.New("following feed Redis client unavailable")
+	}
+	if viewerID == 0 {
+		return ListFollowingResponse{}, errors.New("login required")
+	}
+	relations, err := f.getFollowingRelations(ctx, viewerID)
 	if err != nil {
 		return ListFollowingResponse{}, err
 	}
+	authors := relations.Authors
+	if len(authors) == 0 {
+		return ListFollowingResponse{VideoList: []FeedVideoItem{}}, nil
+	}
+	bigCreators := relations.BigCreators
 	followed := make(map[uint]struct{}, len(authors))
 	for _, id := range authors {
 		followed[id] = struct{}{}
 	}
 	ids, err := f.listFollowingRedis(ctx, viewerID, bigCreators, followed, cursor, limit)
 	if err != nil {
-		log.Printf("following feed Redis read failed, falling back to MySQL: %v", err)
-		return f.listFollowingFromDB(ctx, limit, cursor, viewerID)
+		return ListFollowingResponse{}, err
 	}
 	baseVideos, err := f.GetVideoByIDs(ctx, ids)
 	if err != nil {
-		log.Printf("following feed video lookup failed, falling back to MySQL: %v", err)
-		return f.listFollowingFromDB(ctx, limit, cursor, viewerID)
+		return ListFollowingResponse{}, err
 	}
 	sortFollowingVideos(baseVideos)
-	// 去 mysql 补数据
-	if len(baseVideos) < limit+1 {
-		dbCursor := cursor
-		if len(baseVideos) > 0 {
-			last := baseVideos[len(baseVideos)-1]
-			dbCursor = TimelineCursor{
-				CreateTime: last.CreateTime,
-				VideoID:    last.ID,
-			}
-		}
-		page, err := f.repo.ListFollowingVideos(ctx, viewerID, &dbCursor, limit+1-len(baseVideos))
-		if err != nil {
-			return ListFollowingResponse{}, err
-		}
-		seen := make(map[uint]struct{})
-		for _, v := range baseVideos {
-			seen[v.ID] = struct{}{}
-		}
-
-		for _, item := range page {
-			if _, duplicate := seen[item.ID]; !duplicate {
-				seen[item.ID] = struct{}{}
-				baseVideos = append(baseVideos, item)
-			}
-		}
-		sortFollowingVideos(baseVideos)
-	}
 	return f.followingResponse(ctx, baseVideos, limit, viewerID)
 }
 
@@ -553,77 +540,21 @@ func (f *FeedService) followingResponse(ctx context.Context, videos []*video.Vid
 	}, nil
 }
 
-// 从Redis中分别读取 inbox与Outbox
+// Read the follower inbox and all followed big-creator outboxes in one round trip.
 func (f *FeedService) listFollowingRedis(ctx context.Context, viewerID uint, bigCreators []uint, followed map[uint]struct{}, cursor TimelineCursor, limit int) ([]uint, error) {
-	ids, err := f.listFollowingInbox(ctx, viewerID, followed, cursor, limit)
-	if err != nil {
-		return nil, err
-	}
-	outboxIDs, err := f.listFollowingOutboxes(ctx, bigCreators, followed, cursor, limit)
-	if err != nil {
-		return nil, err
-	}
-	seen := make(map[uint]struct{}, len(ids))
-	for _, id := range ids {
-		seen[id] = struct{}{}
-	}
-	for _, id := range outboxIDs {
-		if _, duplicate := seen[id]; !duplicate {
-			seen[id] = struct{}{}
-			ids = append(ids, id)
-		}
-	}
-	return ids, nil
-}
-
-// pipe读取Inbox视频
-func (f *FeedService) listFollowingInbox(ctx context.Context, viewerID uint, followed map[uint]struct{}, cursor TimelineCursor, limit int) ([]uint, error) {
 	pipe := f.rediscache.Pipeline()
 	if pipe == nil {
-		return nil, errors.New("following inbox Redis pipeline unavailable")
+		return nil, errors.New("following feed Redis pipeline unavailable")
 	}
-	command := pipe.ZRangeArgsWithScores(ctx, redis.ZRangeArgs{
+	commands := make([]*redis.ZSliceCmd, 0, len(bigCreators)+1)
+	commands = append(commands, pipe.ZRangeArgsWithScores(ctx, redis.ZRangeArgs{
 		Key:     f.rediscache.FollowerInboxKey(viewerID),
 		Start:   followingMaxScore(cursor),
 		Stop:    "-inf",
 		ByScore: true,
 		Rev:     true,
-		Count:   int64(limit),
-	})
-	if _, err := pipe.Exec(ctx); err != nil {
-		return nil, fmt.Errorf("read following inbox: %w", err)
-	}
-	values, err := command.Result()
-	if err != nil {
-		return nil, fmt.Errorf("get following inbox result: %w", err)
-	}
-	ids := make([]uint, 0)
-	for _, value := range values {
-		member, ok := value.Member.(string)
-		if !ok {
-			continue
-		}
-		authorID, videoID, ok := parseFeedVideoMember(member)
-		if !ok {
-			continue
-		}
-		if _, ok := followed[authorID]; ok {
-			ids = append(ids, videoID)
-		}
-	}
-	return ids, nil
-}
-
-func (f *FeedService) listFollowingOutboxes(ctx context.Context, bigCreators []uint, followed map[uint]struct{}, cursor TimelineCursor, limit int) ([]uint, error) {
-	if len(bigCreators) == 0 {
-		return nil, nil
-	}
-	pipe := f.rediscache.Pipeline()
-	if pipe == nil {
-		return nil, errors.New("following outbox Redis pipeline unavailable")
-	}
-	// 每个大V加pipe查询
-	commands := make([]*redis.ZSliceCmd, 0, len(bigCreators))
+		Count:   int64(limit + 1),
+	}))
 	for _, authorID := range bigCreators {
 		commands = append(commands, pipe.ZRangeArgsWithScores(ctx, redis.ZRangeArgs{
 			Key:     f.rediscache.AuthorOutboxKey(authorID),
@@ -631,17 +562,22 @@ func (f *FeedService) listFollowingOutboxes(ctx context.Context, bigCreators []u
 			Stop:    "-inf",
 			ByScore: true,
 			Rev:     true,
-			Count:   int64(limit),
+			Count:   int64(limit + 1),
 		}))
 	}
 	if _, err := pipe.Exec(ctx); err != nil {
-		return nil, fmt.Errorf("read following outboxes: %w", err)
+		return nil, fmt.Errorf("read following Redis indexes: %w", err)
 	}
-	ids := make([]uint, 0)
+	type candidate struct {
+		id    uint
+		score float64
+	}
+	candidates := make([]candidate, 0, (limit+1)*(len(bigCreators)+1))
+	seen := make(map[uint]struct{}, cap(candidates))
 	for _, command := range commands {
 		values, err := command.Result()
 		if err != nil {
-			return nil, fmt.Errorf("get following outbox result: %w", err)
+			return nil, fmt.Errorf("get following Redis index result: %w", err)
 		}
 		for _, value := range values {
 			member, ok := value.Member.(string)
@@ -652,10 +588,28 @@ func (f *FeedService) listFollowingOutboxes(ctx context.Context, bigCreators []u
 			if !ok {
 				continue
 			}
-			if _, ok := followed[authorID]; ok {
-				ids = append(ids, videoID)
+			if _, ok := followed[authorID]; !ok {
+				continue
 			}
+			if _, duplicate := seen[videoID]; duplicate {
+				continue
+			}
+			seen[videoID] = struct{}{}
+			candidates = append(candidates, candidate{id: videoID, score: value.Score})
 		}
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].score == candidates[j].score {
+			return candidates[i].id > candidates[j].id
+		}
+		return candidates[i].score > candidates[j].score
+	})
+	if len(candidates) > limit+1 {
+		candidates = candidates[:limit+1]
+	}
+	ids := make([]uint, 0, len(candidates))
+	for _, item := range candidates {
+		ids = append(ids, item.id)
 	}
 	return ids, nil
 }

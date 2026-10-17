@@ -5,4 +5,8 @@
 .gocache
 .run
 highlight.md
-/scripts/
+/scripts/*
+!/scripts/bench/
+/scripts/bench/*
+!/scripts/bench/following/
+scripts/bench/following/output/
