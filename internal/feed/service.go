@@ -495,13 +495,23 @@ func (f *FeedService) getFollowingRelations(ctx context.Context, viewerID uint) 
 	return relations, nil
 }
 
+// listFollowingFromMySQL is used only when the Redis-backed feed cannot be read.
+func (f *FeedService) listFollowingFromMySQL(ctx context.Context, limit int, cursor TimelineCursor, viewerID uint) (ListFollowingResponse, error) {
+	videos, err := f.repo.ListFollowingVideos(ctx, viewerID, cursor, limit+1)
+	if err != nil {
+		return ListFollowingResponse{}, err
+	}
+	return f.followingResponse(ctx, videos, limit, viewerID)
+}
+
 // ListFollowing reads candidate IDs from the follower inbox and followed authors' outboxes.
 func (f *FeedService) ListFollowing(ctx context.Context, limit int, cursor TimelineCursor, viewerID uint) (ListFollowingResponse, error) {
-	if f.rediscache == nil {
-		return ListFollowingResponse{}, errors.New("following feed Redis client unavailable")
-	}
 	if viewerID == 0 {
 		return ListFollowingResponse{}, errors.New("login required")
+	}
+	if f.rediscache == nil {
+		log.Printf("following feed Redis client unavailable, falling back to MySQL")
+		return f.listFollowingFromMySQL(ctx, limit, cursor, viewerID)
 	}
 	relations, err := f.getFollowingRelations(ctx, viewerID)
 	if err != nil {
@@ -518,11 +528,13 @@ func (f *FeedService) ListFollowing(ctx context.Context, limit int, cursor Timel
 	}
 	ids, err := f.listFollowingRedis(ctx, viewerID, bigCreators, followed, cursor, limit)
 	if err != nil {
-		return ListFollowingResponse{}, err
+		log.Printf("following feed Redis index read failed, falling back to MySQL: %v", err)
+		return f.listFollowingFromMySQL(ctx, limit, cursor, viewerID)
 	}
 	baseVideos, err := f.GetVideoByIDs(ctx, ids)
 	if err != nil {
-		return ListFollowingResponse{}, err
+		log.Printf("following feed video lookup failed, falling back to MySQL: %v", err)
+		return f.listFollowingFromMySQL(ctx, limit, cursor, viewerID)
 	}
 	sortFollowingVideos(baseVideos)
 	return f.followingResponse(ctx, baseVideos, limit, viewerID)

@@ -60,6 +60,21 @@ func (repo *FeedRepository) ListBigFollowingAuthorIDs(ctx context.Context, autho
 	return ids, err
 }
 
+// ListFollowingVideos reads the feed directly from MySQL when Redis is unavailable.
+func (repo *FeedRepository) ListFollowingVideos(ctx context.Context, followerID uint, cursor TimelineCursor, limit int) ([]*video.Video, error) {
+	var videos []*video.Video
+	query := repo.db.WithContext(ctx).
+		Table("videos AS v").
+		Select("v.*").
+		Joins("JOIN socials AS f ON f.followee_id = v.author_id").
+		Where("f.follower_id = ?", followerID)
+	if !cursor.CreateTime.IsZero() && cursor.VideoID > 0 {
+		query = query.Where("v.create_time < ? OR (v.create_time = ? AND v.id < ?)", cursor.CreateTime, cursor.CreateTime, cursor.VideoID)
+	}
+	err := query.Order("v.create_time DESC, v.id DESC").Limit(limit).Scan(&videos).Error
+	return videos, err
+}
+
 func (repo *FeedRepository) ListByPopularity(ctx context.Context, limit int, cursor PopularCursor) ([]*video.Video, error) {
 	var videos []*video.Video
 	query := repo.db.WithContext(ctx).Model(&video.Video{}).Order("popularity DESC, create_time DESC, id DESC")
