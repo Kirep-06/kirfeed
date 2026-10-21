@@ -6,8 +6,6 @@ import (
 	"kirfeed/internal/config"
 	"kirfeed/internal/social"
 	"kirfeed/internal/video"
-	"os"
-	"strconv"
 	"time"
 
 	"gorm.io/driver/mysql"
@@ -22,19 +20,13 @@ func NewDB(dbcfg config.DatabaseConfig) (*gorm.DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	if raw := os.Getenv("DB_MAX_OPEN_CONNS"); raw != "" {
-		maxOpen, parseErr := strconv.Atoi(raw)
-		if parseErr != nil || maxOpen < 1 {
-			return nil, fmt.Errorf("invalid DB_MAX_OPEN_CONNS: %q", raw)
-		}
-		sqlDB, err := db.DB()
-		if err != nil {
-			return nil, err
-		}
-		sqlDB.SetMaxOpenConns(maxOpen)
-		sqlDB.SetMaxIdleConns(maxOpen / 2)
-		sqlDB.SetConnMaxLifetime(30 * time.Minute)
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
 	}
+	sqlDB.SetMaxOpenConns(dbcfg.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(dbcfg.MaxOpenConns / 2)
+	sqlDB.SetConnMaxLifetime(30 * time.Minute)
 
 	return db, nil
 }

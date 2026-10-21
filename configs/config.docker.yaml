@@ -7,6 +7,7 @@ database:
   user: root
   password: 666666
   dbname: kirfeed
+  max_open_conns: 50
 
 redis:
   host: localhost
