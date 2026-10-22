@@ -10,3 +10,4 @@ highlight.md
 /scripts/bench/*
 !/scripts/bench/following/
 scripts/bench/following/output/
+_asyncwrite-bench/
