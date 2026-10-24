@@ -2,6 +2,7 @@ package feed
 
 import (
 	"context"
+	"kirfeed/internal/social"
 	"kirfeed/internal/video"
 
 	"gorm.io/gorm"
@@ -44,6 +45,12 @@ func (repo *FeedRepository) ListFollowingAuthorIDs(ctx context.Context, follower
 	var ids []uint
 	err := repo.db.WithContext(ctx).Table("socials").Where("follower_id = ?", followerID).Pluck("followee_id", &ids).Error
 	return ids, err
+}
+
+func (repo *FeedRepository) ListFollowingRelations(ctx context.Context, followerID uint) ([]social.Social, error) {
+	var relations []social.Social
+	err := repo.db.WithContext(ctx).Where("follower_id = ?", followerID).Order("created_at ASC, id ASC").Find(&relations).Error
+	return relations, err
 }
 
 func (repo *FeedRepository) ListBigFollowingAuthorIDs(ctx context.Context, authorIDs []uint) ([]uint, error) {

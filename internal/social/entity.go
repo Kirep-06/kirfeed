@@ -1,11 +1,18 @@
 package social
 
-import "kirfeed/internal/account"
+import (
+	"time"
+
+	"kirfeed/internal/account"
+)
+
+const BigCreatorFollowerThreshold = 1000
 
 type Social struct {
-	ID         uint `gorm:"primaryKey"`
-	FollowerID uint `gorm:"not null;index:idx_social_follower;uniqueIndex:idx_social_follower_vlogger"`
-	FolloweeID uint `gorm:"not null;index:idx_social_vlogger;uniqueIndex:idx_social_follower_vlogger"`
+	ID         uint      `gorm:"primaryKey"`
+	FollowerID uint      `gorm:"not null;index:idx_social_follower;uniqueIndex:idx_social_follower_vlogger"`
+	FolloweeID uint      `gorm:"not null;index:idx_social_vlogger;uniqueIndex:idx_social_follower_vlogger"`
+	CreatedAt  time.Time `gorm:"not null;autoCreateTime:milli;default:CURRENT_TIMESTAMP(3)"`
 }
 
 type FollowRequest struct {

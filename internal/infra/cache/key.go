@@ -56,12 +56,41 @@ func (c *Client) MergedHotVideoMinuteKey(minute time.Time) string {
 	return c.Key("hot:video:merge:1m:%s", minute.Format("200601021504"))
 }
 
-func (c *Client) FollowingFeedPatternKey(accountID uint) string {
-	return c.Key("feed:listByFollowing:*:accountID=%d:*", accountID)
+func (c *Client) FollowingRelationsKey(accountID uint) string {
+	return c.Key("social:following:v2:%d", accountID)
 }
 
-func (c *Client) FollowingRelationsKey(accountID uint) string {
-	return c.Key("feed:listByFollowing:relations:accountID=%d:meta", accountID)
+func (c *Client) FollowingRelationsGenerationKey(accountID uint) string {
+	return c.Key("social:following:v2:%d:generation", accountID)
+}
+
+func (c *Client) FollowingRelationsLockKey(accountID uint) string {
+	return c.Key("social:following:%d:lock", accountID)
+}
+
+func (c *Client) RecentFollowersKey(accountID uint) string {
+	return c.Key("social:followers:recent:%d", accountID)
+}
+
+func (c *Client) RecentFollowersGenerationKey(accountID uint) string {
+	return c.Key("social:followers:recent:%d:generation", accountID)
+}
+
+func (c *Client) FollowingCountKey(accountID uint) string {
+	return c.Key("social:following_count:%d", accountID)
+}
+func (c *Client) FollowingCountGenerationKey(accountID uint) string {
+	return c.Key("social:following_count:%d:generation", accountID)
+}
+func (c *Client) FollowersCountKey(accountID uint) string {
+	return c.Key("social:followers_count:%d", accountID)
+}
+func (c *Client) FollowersCountGenerationKey(accountID uint) string {
+	return c.Key("social:followers_count:%d:generation", accountID)
+}
+
+func (c *Client) AuthorClassificationKey(authorID uint) string {
+	return c.Key("social:author_classification:v2:%d", authorID)
 }
 
 func (c *Client) AuthorOutboxKey(authorID uint) string {

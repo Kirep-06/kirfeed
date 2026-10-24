@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	rediscache "kirfeed/internal/infra/cache"
+	"kirfeed/internal/social"
 	"kirfeed/internal/video"
 	"log"
 	"sort"
@@ -463,7 +464,7 @@ func buildOrderedResult(orderedIDs []uint, dataMap map[uint]*video.Video) []*vid
 	return res
 }
 
-const BigCreatorFollowerThreshold = 1000
+const BigCreatorFollowerThreshold = social.BigCreatorFollowerThreshold
 
 type followingRelations struct {
 	Authors     []uint `json:"authors"`
@@ -472,27 +473,91 @@ type followingRelations struct {
 
 func (f *FeedService) getFollowingRelations(ctx context.Context, viewerID uint) (followingRelations, error) {
 	key := f.rediscache.FollowingRelationsKey(viewerID)
-	if cached, err := f.rediscache.GetBytes(ctx, key); err == nil {
-		var relations followingRelations
-		if json.Unmarshal(cached, &relations) == nil {
-			return relations, nil
+	members, _, hit, cacheErr := f.rediscache.ReadZSetIndex(ctx, key, 0)
+	if cacheErr == nil && hit {
+		authors := make([]uint, 0, len(members))
+		for _, member := range members {
+			var relationID, authorID uint
+			if n, err := fmt.Sscanf(fmt.Sprint(member.Member), "%d:%d", &relationID, &authorID); err == nil && n == 2 && relationID > 0 && authorID > 0 {
+				authors = append(authors, authorID)
+			}
+		}
+		if len(authors) == len(members) {
+			bigCreators, err := f.getBigFollowingAuthors(ctx, authors)
+			if err != nil {
+				return followingRelations{}, err
+			}
+			return followingRelations{Authors: authors, BigCreators: bigCreators}, nil
 		}
 	}
-	authors, err := f.repo.ListFollowingAuthorIDs(ctx, viewerID)
+	generation, generationErr := f.rediscache.IndexGeneration(ctx, f.rediscache.FollowingRelationsGenerationKey(viewerID))
+	relationsFromDB, err := f.repo.ListFollowingRelations(ctx, viewerID)
 	if err != nil {
 		return followingRelations{}, err
 	}
-	relations := followingRelations{Authors: authors}
-	if len(authors) > 0 {
-		relations.BigCreators, err = f.repo.ListBigFollowingAuthorIDs(ctx, authors)
-		if err != nil {
-			return followingRelations{}, err
+	authors := make([]uint, 0, len(relationsFromDB))
+	cacheMembers := make([]redis.Z, 0, len(relationsFromDB))
+	for _, relation := range relationsFromDB {
+		authors = append(authors, relation.FolloweeID)
+		followedAt := relation.CreatedAt
+		if followedAt.IsZero() {
+			followedAt = time.UnixMilli(int64(relation.ID))
+		}
+		cacheMembers = append(cacheMembers, redis.Z{Member: fmt.Sprintf("%020d:%d", relation.ID, relation.FolloweeID), Score: float64(followedAt.UnixMilli())})
+	}
+	if generationErr == nil {
+		_, _ = f.rediscache.StoreZSetIfGeneration(ctx, f.rediscache.FollowingRelationsGenerationKey(viewerID), key, generation, cacheMembers, len(cacheMembers), followingRelationsTTL)
+	}
+	bigCreators, err := f.getBigFollowingAuthors(ctx, authors)
+	if err != nil {
+		return followingRelations{}, err
+	}
+	return followingRelations{Authors: authors, BigCreators: bigCreators}, nil
+}
+
+const followingRelationsTTL = 15 * time.Minute
+
+func (f *FeedService) getBigFollowingAuthors(ctx context.Context, authors []uint) ([]uint, error) {
+	if len(authors) == 0 {
+		return []uint{}, nil
+	}
+	keys := make([]string, len(authors))
+	for i, id := range authors {
+		keys[i] = f.rediscache.AuthorClassificationKey(id)
+	}
+	values, cacheErr := f.rediscache.MGet(ctx, keys...)
+	if cacheErr != nil {
+		return f.repo.ListBigFollowingAuthorIDs(ctx, authors)
+	}
+	missing := make([]uint, 0)
+	big := make([]uint, 0)
+	for i, value := range values {
+		if value == nil {
+			missing = append(missing, authors[i])
+		} else if fmt.Sprint(value) == "1" {
+			big = append(big, authors[i])
 		}
 	}
-	if encoded, err := json.Marshal(relations); err == nil {
-		_ = f.rediscache.SetBytes(ctx, key, encoded, 30*time.Second)
+	if len(missing) == 0 {
+		return big, nil
 	}
-	return relations, nil
+	missingBig, err := f.repo.ListBigFollowingAuthorIDs(ctx, missing)
+	if err != nil {
+		return nil, err
+	}
+	bigSet := make(map[uint]struct{}, len(missingBig))
+	for _, id := range missingBig {
+		bigSet[id] = struct{}{}
+	}
+	for _, id := range missing {
+		value := "0"
+		if _, ok := bigSet[id]; ok {
+			value = "1"
+			big = append(big, id)
+		}
+		_ = f.rediscache.SetBytes(ctx, f.rediscache.AuthorClassificationKey(id), []byte(value), followingRelationsTTL)
+	}
+	return big, nil
 }
 
 // listFollowingFromMySQL is used only when the Redis-backed feed cannot be read.
