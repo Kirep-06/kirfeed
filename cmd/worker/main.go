@@ -165,6 +165,7 @@ func run() error {
 	likeRepo := video.NewLikeRepository(sqlDB)
 	commentRepo := video.NewCommentRepository(sqlDB)
 	socialRepo := social.NewSocialRepository(sqlDB)
+	followerCounts := social.NewSocialService(socialRepo, nil, nil, cache)
 	feedCache := feed.NewFeedCache(cache)
 
 	rmq := &mq.RabbitMQ{Conn: conn}
@@ -189,14 +190,14 @@ func run() error {
 		return worker.NewCommentWorker(ch, commentRepo, videoRepo, commentQueue).Run(ctx)
 	})
 	go runWorkerWithRetry(ctx, "SocialWorker", conn, func(ch *amqp.Channel) error {
-		return worker.NewSocialWorker(ch, socialRepo, videoRepo, feedCache, socialQueue).Run(ctx)
+		return worker.NewSocialWorker(ch, socialRepo, followerCounts, videoRepo, feedCache, socialQueue).Run(ctx)
 	})
 	if cache != nil {
 		go runWorkerWithRetry(ctx, "PopularityWorker", conn, func(ch *amqp.Channel) error {
 			return worker.NewPopularityWorker(ch, cache, popularityQueue).Run(ctx)
 		})
 		go runWorkerWithRetry(ctx, "FanoutWorker", conn, func(ch *amqp.Channel) error {
-			return worker.NewFanoutWorker(ch, videoRepo, socialRepo, feedCache, "video.fanout.queue").Run(ctx)
+			return worker.NewFanoutWorker(ch, videoRepo, socialRepo, followerCounts, feedCache, "video.fanout.queue").Run(ctx)
 		})
 	}
 

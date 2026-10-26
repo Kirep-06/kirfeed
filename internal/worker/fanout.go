@@ -15,21 +15,22 @@ import (
 )
 
 type FanoutWorker struct {
-	ch     *amqp.Channel
-	videos *video.VideoRepository
-	social *social.SocialRepository
-	cache  *feed.FeedCache
-	queue  string
+	ch              *amqp.Channel
+	videos          *video.VideoRepository
+	social          *social.SocialRepository
+	followerCounter *social.SocialService
+	cache           *feed.FeedCache
+	queue           string
 }
 
-func NewFanoutWorker(ch *amqp.Channel, videos *video.VideoRepository, socialRepo *social.SocialRepository, cache *feed.FeedCache, queue string) *FanoutWorker {
-	return &FanoutWorker{ch: ch, videos: videos, social: socialRepo, cache: cache, queue: queue}
+func NewFanoutWorker(ch *amqp.Channel, videos *video.VideoRepository, socialRepo *social.SocialRepository, counts *social.SocialService, cache *feed.FeedCache, queue string) *FanoutWorker {
+	return &FanoutWorker{ch: ch, videos: videos, social: socialRepo, followerCounter: counts, cache: cache, queue: queue}
 }
 
 const FanoutThreshold = feed.BigCreatorFollowerThreshold
 
 func (w *FanoutWorker) Run(ctx context.Context) error {
-	if w == nil || w.ch == nil || w.videos == nil || w.social == nil || w.cache == nil {
+	if w == nil || w.ch == nil || w.videos == nil || w.social == nil || w.followerCounter == nil || w.cache == nil {
 		return errors.New("fanout worker is not initialized")
 	}
 	if w.queue == "" {
@@ -85,7 +86,7 @@ func (w *FanoutWorker) process(ctx context.Context, body []byte) error {
 	if event.AuthorID == 0 || event.VideoID == 0 {
 		return nil
 	}
-	followerCount, err := w.social.CountFollowers(ctx, event.AuthorID)
+	followerCount, err := w.followerCounter.CountFollowers(ctx, event.AuthorID)
 	if err != nil {
 		return err
 	}
@@ -96,7 +97,7 @@ func (w *FanoutWorker) process(ctx context.Context, body []byte) error {
 }
 
 func (w *FanoutWorker) addFollowerInbox(ctx context.Context, event mq.FanoutEvent) error {
-	const batchSize = 100
+	const batchSize = 500
 	var cursor uint
 	for {
 		followerIDs, nextCursor, hasMore, err := w.social.ListFollowerIDs(ctx, event.AuthorID, batchSize, cursor)

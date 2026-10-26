@@ -17,19 +17,20 @@ import (
 const followBackfillLimit = 500
 
 type SocialWorker struct {
-	ch        *amqp.Channel
-	repo      *social.SocialRepository
-	videos    *video.VideoRepository
-	feedCache *feed.FeedCache
-	queue     string
+	ch              *amqp.Channel
+	repo            *social.SocialRepository
+	followerCounter *social.SocialService
+	videos          *video.VideoRepository
+	feedCache       *feed.FeedCache
+	queue           string
 }
 
-func NewSocialWorker(ch *amqp.Channel, repo *social.SocialRepository, videos *video.VideoRepository, feedCache *feed.FeedCache, queue string) *SocialWorker {
-	return &SocialWorker{ch: ch, repo: repo, videos: videos, feedCache: feedCache, queue: queue}
+func NewSocialWorker(ch *amqp.Channel, repo *social.SocialRepository, counts *social.SocialService, videos *video.VideoRepository, feedCache *feed.FeedCache, queue string) *SocialWorker {
+	return &SocialWorker{ch: ch, repo: repo, followerCounter: counts, videos: videos, feedCache: feedCache, queue: queue}
 }
 
 func (w *SocialWorker) Run(ctx context.Context) error {
-	if w == nil || w.ch == nil || w.repo == nil {
+	if w == nil || w.ch == nil || w.repo == nil || w.followerCounter == nil {
 		return errors.New("social worker is not initialized")
 	}
 	if w.queue == "" {
@@ -98,7 +99,7 @@ func (w *SocialWorker) process(ctx context.Context, body []byte) error {
 		if !isFollowed { // Ignore a stale event if the user has already unfollowed.
 			return nil
 		}
-		followerCount, err := w.repo.CountFollowers(ctx, event.FolloweeID)
+		followerCount, err := w.followerCounter.CountFollowers(ctx, event.FolloweeID)
 		if err != nil {
 			return err
 		}
