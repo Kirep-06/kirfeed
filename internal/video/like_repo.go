@@ -70,15 +70,15 @@ func (r *LikeRepository) BatchGetLiked(ctx context.Context, videoIDs []uint, acc
 	if accountID == 0 {
 		return likeMap, nil
 	}
-	var likes []Like
+	var likedVideoIDs []uint
 	err := r.db.WithContext(ctx).Model(&Like{}).
 		Where("video_id IN ? AND account_id = ?", videoIDs, accountID).
-		Find(&likes).Error
+		Pluck("video_id", &likedVideoIDs).Error
 	if err != nil {
 		return nil, err
 	}
-	for _, like := range likes {
-		likeMap[like.VideoID] = true
+	for _, videoID := range likedVideoIDs {
+		likeMap[videoID] = true
 	}
 	return likeMap, nil
 }
