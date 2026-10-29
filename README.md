@@ -140,10 +140,10 @@ picture/             Feed 和热度流程图及生成脚本
 
 ### Feed
 
-![最新 Feed 读取流程](picture/feed/latest_feed_flow.png)
+![最新 Feed 读取流程](picture/images/feed/latest_feed_flow.png)
 
-![关注 Feed 流程](picture/feed/following_feed_flow.png)
+![关注 Feed 流程](picture/images/feed/following_feed_flow.png)
 
 ### 热度
 
-![热度写入流程](picture/popularity/popularity_write_flow.png)
+![热度写入流程](picture/images/popularity/popularity_write_flow.png)
