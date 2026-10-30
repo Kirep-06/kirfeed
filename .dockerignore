@@ -1,0 +1,10 @@
+.git
+.gitignore
+.env
+**/.env
+.run
+**/.run
+.vscode
+postman
+picture
+highlight.md

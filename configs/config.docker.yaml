@@ -2,21 +2,21 @@ server:
   port: 8080
 
 database:
-  host: localhost
-  port: 3307
+  host: mysql
+  port: 3306
   user: root
   password: 666666
   dbname: kirfeed
   max_open_conns: 50
 
 redis:
-  host: localhost
+  host: redis
   port: 6379
   password: 666666
   db: 0
 
 rabbitmq:
-  host: localhost
+  host: rabbitmq
   port: 5672
   username: admin
   password: 666666

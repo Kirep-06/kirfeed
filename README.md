@@ -22,32 +22,37 @@
 
 ## 启动
 
-项目使用 Go `1.26.1` 或更新版本。先启动 MySQL、Redis 和 RabbitMQ：
+### Docker Compose 一键启动
+
+安装 Docker Engine 和 Docker Compose 后，在项目根目录运行：
 
 ```bash
-docker compose up -d mysql redis rabbitmq
+docker compose up -d --build
 ```
 
-Compose 会将 MySQL 映射到宿主机 `3307`，Redis 使用 `6379`，RabbitMQ 使用 `5672`；管理台地址为 `http://localhost:15672`，默认开发账号为 `admin` / `666666`。如用于非本地开发环境，请修改 `docker-compose.yaml` 和配置文件中的默认凭据。
+Compose 会构建并启动 API、Worker、MySQL、Redis 和 RabbitMQ。API 默认地址为 `http://localhost:8080`，健康检查地址为 `http://localhost:8080/ping`。RabbitMQ 管理台地址为 `http://localhost:15672`，默认开发账号为 `admin` / `666666`。
 
-在 PowerShell 中分别打开两个终端，启动 API 和 Worker：
+查看容器状态和服务日志：
 
-```powershell
-$env:CONFIG_PATH = "configs/config.docker.yaml"
-go run ./cmd
+```bash
+docker compose ps
+docker compose logs -f api worker
 ```
 
-```powershell
-$env:CONFIG_PATH = "configs/config.docker.yaml"
-go run ./cmd/worker
+停止服务（保留数据库、消息队列和上传文件数据）：
+
+```bash
+docker compose down
 ```
 
-API 默认监听 `8080`。可以访问 `GET http://localhost:8080/ping` 检查服务，正常时返回 `{"message":"pong"}`。API 启动时会自动迁移数据库表。
+MySQL、Redis、RabbitMQ 和上传文件使用 Docker named volumes 持久化。API 容器在启动时自动迁移数据库表；Worker 会在 API 健康检查通过后启动。
+
+Compose 文件中的默认密码和 `JWT_SECRET` 仅供本机开发。部署到其他环境前，请在项目根目录 `.env` 中设置强 `JWT_SECRET`，并同步修改 `docker-compose.yaml` 与 `configs/config.docker.yaml` 中的数据库、Redis 和 RabbitMQ 凭据。
 
 配置文件：
 
-- `configs/config.yaml`：连接本机 MySQL `3306`、Redis `6379` 和 RabbitMQ `5672`。
-- `configs/config.docker.yaml`：连接上述 Compose 映射的 MySQL `3307`。
+- `configs/config.yaml`：连接本机 MySQL `3306`、Redis `6379` 和 RabbitMQ `5672`，用于本地开发。
+- `configs/config.docker.yaml`：通过 Compose 服务名连接容器网络中的 MySQL、Redis 和 RabbitMQ。
 - 可通过 `CONFIG_PATH` 指定配置文件；未设置时默认读取 `configs/config.yaml`。
 
 ## 接口清单
@@ -127,6 +132,8 @@ API 默认监听 `8080`。可以访问 `GET http://localhost:8080/ping` 检查�
 ```text
 cmd/                 API 与 Worker 程序入口
 configs/             本地和 Compose 开发配置
+Dockerfile           API 与 Worker 共用的镜像构建文件
+docker-compose.yaml  一键启动 API、Worker 和基础服务
 internal/account/    账号与认证相关业务
 internal/video/      视频、点赞和评论
 internal/social/     关注关系
